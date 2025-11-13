@@ -1,10 +1,9 @@
 import os
 
 import voyager.utils as U
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.schema import HumanMessage, SystemMessage
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives import load_control_primitives
@@ -13,17 +12,18 @@ from voyager.control_primitives import load_control_primitives
 class SkillManager:
     def __init__(
         self,
-        model_name="gpt-3.5-turbo",
+        model="gpt-3.5-turbo",
         temperature=0,
         retrieval_top_k=5,
-        request_timout=120,
+        http_timeout=120,
         ckpt_dir="ckpt",
         resume=False,
     ):
         self.llm = ChatOpenAI(
-            model_name=model_name,
+            model=model,
             temperature=temperature,
-            request_timeout=request_timout,
+            max_retries=3,
+            request_timeout=http_timeout,
         )
         U.f_mkdir(f"{ckpt_dir}/skill/code")
         U.f_mkdir(f"{ckpt_dir}/skill/description")

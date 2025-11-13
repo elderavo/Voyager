@@ -7,7 +7,7 @@ import requests
 import json
 
 import gymnasium as gym
-from gymnasium.core import ObsType
+from gymnasium.core import ObsType 
 
 import voyager.utils as U
 
@@ -18,11 +18,12 @@ from .process_monitor import SubprocessMonitor
 class VoyagerEnv(gym.Env):
     def __init__(
         self,
+        mc_host="localhost",
         mc_port=None,
         azure_login=None,
         server_host="http://127.0.0.1",
         server_port=3000,
-        request_timeout=600,
+        step_timeout=600,
         log_path="./logs",
     ):
         if not mc_port and not azure_login:
@@ -32,10 +33,11 @@ class VoyagerEnv(gym.Env):
                 "Both mc_port and mc_login are specified, mc_port will be ignored"
             )
         self.mc_port = mc_port
+        self.mc_host = mc_host
         self.azure_login = azure_login
         self.server = f"{server_host}:{server_port}"
         self.server_port = server_port
-        self.request_timeout = request_timeout
+        self.step_timeout = step_timeout
         self.log_path = log_path
         self.mineflayer = self.get_mineflayer_process(server_port)
         if azure_login:
@@ -93,7 +95,7 @@ class VoyagerEnv(gym.Env):
             res = requests.post(
                 f"{self.server}/start",
                 json=self.reset_options,
-                timeout=self.request_timeout,
+                timeout=self.step_timeout,
             )
             if res.status_code != 200:
                 self.mineflayer.stop()
@@ -116,7 +118,7 @@ class VoyagerEnv(gym.Env):
             "programs": programs,
         }
         res = requests.post(
-            f"{self.server}/step", json=data, timeout=self.request_timeout
+            f"{self.server}/step", json=data, timeout=self.step_timeout
         )
         if res.status_code != 200:
             raise RuntimeError("Failed to step Minecraft server")
@@ -140,6 +142,7 @@ class VoyagerEnv(gym.Env):
             raise RuntimeError("inventory can only be set when options is hard")
 
         self.reset_options = {
+            "host": self.mc_host,
             "port": self.mc_port,
             "reset": options.get("mode", "hard"),
             "inventory": options.get("inventory", {}),

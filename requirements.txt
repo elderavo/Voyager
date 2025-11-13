@@ -1,14 +1,22 @@
 tqdm
-langchain
+# LangChain ecosystem - pinned to v0.1.x for Pydantic v1 compatibility
+langchain==0.1.20
+langchain-openai==0.0.8
+langchain-community==0.0.38
+langsmith==0.1.17
+# Core dependencies
 javascript
 setuptools
-openai
+openai==1.12.0
 chardet
 cchardet
-chromadb==0.3.29
+# ChromaDB - updated for stability
+chromadb==0.4.24
 tiktoken
 requests
 setuptools
 gymnasium
 psutil
 minecraft_launcher_lib
+# Pydantic v1 (required by old LangChain)
+pydantic>=1.10.0,<2.0.0

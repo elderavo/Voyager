@@ -3,20 +3,19 @@ import time
 
 import voyager.utils as U
 from javascript import require
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import SystemMessagePromptTemplate
 from langchain.schema import AIMessage, HumanMessage, SystemMessage
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives_context import load_control_primitives_context
 
-
 class ActionAgent:
     def __init__(
         self,
-        model_name="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         temperature=0,
-        request_timout=120,
+        http_timeout=120,
         ckpt_dir="ckpt",
         resume=False,
         chat_log=True,
@@ -25,17 +24,28 @@ class ActionAgent:
         self.ckpt_dir = ckpt_dir
         self.chat_log = chat_log
         self.execution_error = execution_error
+
         U.f_mkdir(f"{ckpt_dir}/action")
+
         if resume:
             print(f"\033[32mLoading Action Agent from {ckpt_dir}/action\033[0m")
             self.chest_memory = U.load_json(f"{ckpt_dir}/action/chest_memory.json")
         else:
             self.chest_memory = {}
+
+        # ---- Modern LangChain + OpenAI client usage ----
+        #
+        # 1. `ChatOpenAI` now uses `model=` consistently.
+        # 2. Timeouts are configured via the HTTP client settings.
+        #
         self.llm = ChatOpenAI(
-            model_name=model_name,
+            model=model,
             temperature=temperature,
-            request_timeout=request_timout,
+            max_retries=3,
+            # Set timeout via request_timeout parameter
+            request_timeout=http_timeout,
         )
+        self.model = model
 
     def update_chest_memory(self, chests):
         for position, chest in chests.items():
@@ -83,7 +93,7 @@ class ActionAgent:
             "smeltItem",
             "killMob",
         ]
-        if not self.llm.model_name == "gpt-3.5-turbo":
+        if self.model != "gpt-3.5-turbo":
             base_skills += [
                 "useChest",
                 "mineflayer",
