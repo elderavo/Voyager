@@ -1,4 +1,8 @@
+import os
 from voyager import Voyager
+
+# Disable ChromaDB telemetry to avoid errors
+#os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 # Configuration for your LAN homelab server
 HOMELAB_IP = "10.0.132.101"  # Your homelab Minecraft server IP
@@ -11,7 +15,8 @@ with open(r"C:\Users\Alex\OneDrive - Naval Postgraduate School\Desktop\openAIKey
 # Create Voyager instance connected to your homelab
 voyager = Voyager(
     mc_host=HOMELAB_IP,      # LAN server IP
-    mc_port=MC_PORT,         # LAN server port
+    mc_port=MC_PORT, 
+    resume=False,    # LAN server port
     openai_api_key=openai_api_key,
     server_port=3000,        # Mineflayer runs locally on port 3000
 )

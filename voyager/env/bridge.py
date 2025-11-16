@@ -52,15 +52,17 @@ class VoyagerEnv(gym.Env):
     def get_mineflayer_process(self, server_port):
         U.f_mkdir(self.log_path, "mineflayer")
         file_path = os.path.abspath(os.path.dirname(__file__))
+        mineflayer_dir = U.f_join(file_path, "mineflayer")
         return SubprocessMonitor(
             commands=[
                 "node",
-                U.f_join(file_path, "mineflayer/index.js"),
+                "index.js",
                 str(server_port),
             ],
             name="mineflayer",
             ready_match=r"Server started on port (\d+)",
             log_path=U.f_join(self.log_path, "mineflayer"),
+            cwd=mineflayer_dir,
         )
 
     def get_mc_instance(self):
@@ -92,17 +94,33 @@ class VoyagerEnv(gym.Env):
                 else:
                     continue
             print(self.mineflayer.ready_line)
-            res = requests.post(
-                f"{self.server}/start",
-                json=self.reset_options,
-                timeout=self.step_timeout,
-            )
-            if res.status_code != 200:
-                self.mineflayer.stop()
-                raise RuntimeError(
-                    f"Minecraft server reply with code {res.status_code}"
-                )
-            return res.json()
+
+            # Give the server a moment to fully initialize after printing ready message
+            time.sleep(1)
+
+            # Retry connection with exponential backoff
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    res = requests.post(
+                        f"{self.server}/start",
+                        json=self.reset_options,
+                        timeout=self.step_timeout,
+                    )
+                    if res.status_code != 200:
+                        self.mineflayer.stop()
+                        raise RuntimeError(
+                            f"Minecraft server reply with code {res.status_code}"
+                        )
+                    return res.json()
+                except (requests.exceptions.ConnectionError, ConnectionResetError):
+                    if attempt < max_retries - 1:
+                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5, 1, 2, 4 seconds
+                        print(f"Connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"Failed to connect to mineflayer server after {max_retries} attempts")
+                        raise
 
     def step(
         self,

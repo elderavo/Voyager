@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import os
 import random
 import re
+import shutil
+
+# Disable ChromaDB telemetry before importing
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import voyager.utils as U
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import Chroma
 
 
@@ -43,7 +48,11 @@ class CurriculumAgent:
         ], f"mode {mode} not supported"
         self.mode = mode
         self.ckpt_dir = ckpt_dir
-        U.f_mkdir(f"{ckpt_dir}/curriculum/vectordb")
+        self._qa_cache_vectordb_dir = f"{ckpt_dir}/curriculum/vectordb"
+        if not resume and os.path.exists(self._qa_cache_vectordb_dir):
+            # Ensure fresh QA cache state when not resuming from checkpoints
+            shutil.rmtree(self._qa_cache_vectordb_dir)
+        U.f_mkdir(self._qa_cache_vectordb_dir)
         if resume:
             print(f"\033[35mLoading Curriculum Agent from {ckpt_dir}/curriculum\033[0m")
             self.completed_tasks = U.load_json(
@@ -59,7 +68,7 @@ class CurriculumAgent:
         self.qa_cache_questions_vectordb = Chroma(
             collection_name="qa_cache_questions_vectordb",
             embedding_function=OpenAIEmbeddings(),
-            persist_directory=f"{ckpt_dir}/curriculum/vectordb",
+            persist_directory=self._qa_cache_vectordb_dir,
         )
         assert self.qa_cache_questions_vectordb._collection.count() == len(
             self.qa_cache
@@ -293,7 +302,7 @@ class CurriculumAgent:
     def propose_next_ai_task(self, *, messages, max_retries=5):
         if max_retries == 0:
             raise RuntimeError("Max retries reached, failed to propose ai task.")
-        curriculum = self.llm(messages).content
+        curriculum = self.llm.invoke(messages).content
         print(f"\033[31m****Curriculum Agent ai message****\n{curriculum}\033[0m")
         try:
             response = self.parse_ai_message(curriculum)
@@ -378,7 +387,7 @@ class CurriculumAgent:
         print(
             f"\033[31m****Curriculum Agent task decomposition****\nFinal task: {task}\033[0m"
         )
-        response = self.llm(messages).content
+        response = self.llm.invoke(messages).content
         print(f"\033[31m****Curriculum Agent task decomposition****\n{response}\033[0m")
         return fix_and_parse_json(response)
 
@@ -460,7 +469,7 @@ class CurriculumAgent:
                 events=events, chest_observation=chest_observation
             ),
         ]
-        qa_response = self.qa_llm(messages).content
+        qa_response = self.qa_llm.invoke(messages).content
         try:
             # Regex pattern to extract question and concept pairs
             pattern = r"Question \d+: (.+)\nConcept \d+: (.+)"
@@ -494,6 +503,6 @@ class CurriculumAgent:
             self.render_human_message_qa_step2_answer_questions(question=question),
         ]
         print(f"\033[35mCurriculum Agent Question: {question}\033[0m")
-        qa_answer = self.qa_llm(messages).content
+        qa_answer = self.qa_llm.invoke(messages).content
         print(f"\033[31mCurriculum Agent {qa_answer}\033[0m")
         return qa_answer

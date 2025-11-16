@@ -21,6 +21,7 @@ class SubprocessMonitor:
         callback_match: str = r"^(?!x)x$",  # regex that will never match
         callback: callable = None,
         finished_callback: callable = None,
+        cwd: str = None,
     ):
         self.commands = commands
         start_time = time.strftime("%Y%m%d_%H%M%S")
@@ -41,15 +42,19 @@ class SubprocessMonitor:
         self.callback = callback
         self.finished_callback = finished_callback
         self.thread = None
+        self.cwd = cwd
 
     def _start(self):
         self.logger.info(f"Starting subprocess with commands: {self.commands}")
+        if self.cwd:
+            self.logger.info(f"Working directory: {self.cwd}")
 
         self.process = psutil.Popen(
             self.commands,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
+            cwd=self.cwd,
         )
         print(f"Subprocess {self.name} started with PID {self.process.pid}.")
         for line in iter(self.process.stdout.readline, ""):

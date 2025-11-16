@@ -22,7 +22,7 @@ class Voyager:
         azure_login: Dict[str, str] = None,
         server_port: int = 3000,
         openai_api_key: str = None,
-        env_wait_ticks: int = 20,
+        env_wait_ticks: int = 40,
         env_step_timeout: int = 600,
         max_iterations: int = 160,
         reset_placed_if_failed: bool = False,
@@ -55,7 +55,6 @@ class Voyager:
         Action agent is the iterative prompting mechanism in paper.
         Curriculum agent is the automatic curriculum in paper.
         Critic agent is the self-verification in paper.
-        Skill manager is the skill library in paper.
         :param mc_port: minecraft in-game port
         :param azure_login: minecraft login config
         :param server_port: mineflayer port
@@ -205,7 +204,7 @@ class Voyager:
     def step(self):
         if self.action_agent_rollout_num_iter < 0:
             raise ValueError("Agent must be reset before stepping")
-        ai_message = self.action_agent.llm(self.messages)
+        ai_message = self.action_agent.llm.invoke(self.messages)
         print(f"\033[34m****Action Agent ai message****\n{ai_message.content}\033[0m")
         self.conversations.append(
             (self.messages[0].content, self.messages[1].content, ai_message.content)

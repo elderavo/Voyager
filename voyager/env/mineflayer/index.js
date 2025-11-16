@@ -2,6 +2,7 @@ const fs = require("fs");
 const express = require("express");
 const bodyParser = require("body-parser");
 const mineflayer = require("mineflayer");
+const { mineflayer: mineflayerViewer } = require("prismarine-viewer");
 
 const skills = require("./lib/skillLoader");
 const { initCounter, getNextTime } = require("./lib/utils");
@@ -99,12 +100,18 @@ app.post("/start", (req, res) => {
         const tool = require("mineflayer-tool").plugin;
         const collectBlock = require("mineflayer-collectblock").plugin;
         const pvp = require("mineflayer-pvp").plugin;
-        const minecraftHawkEye = require("minecrafthawkeye");
+        // minecrafthawkeye may not have a .plugin property, check if it's exported directly
+        const minecraftHawkEyeModule = require("minecrafthawkeye");
+        const minecraftHawkEye = minecraftHawkEyeModule.plugin || minecraftHawkEyeModule;
+
         bot.loadPlugin(pathfinder);
         bot.loadPlugin(tool);
         bot.loadPlugin(collectBlock);
         bot.loadPlugin(pvp);
-        bot.loadPlugin(minecraftHawkEye);
+        // Only load minecraftHawkEye if it's a valid function
+        if (typeof minecraftHawkEye === 'function') {
+            bot.loadPlugin(minecraftHawkEye);
+        }
 
         // bot.collectBlock.movements.digCost = 0;
         // bot.collectBlock.movements.placeCost = 0;
@@ -132,6 +139,11 @@ app.post("/start", (req, res) => {
         initCounter(bot);
         bot.chat("/gamerule keepInventory true");
         bot.chat("/gamerule doDaylightCycle false");
+
+        // Initialize prismarine-viewer so you can watch the bot in a browser
+        // Access at http://localhost:3007 in your web browser
+        bot.viewer = mineflayerViewer(bot, { port: 3007, firstPerson: true });
+        console.log("Prismarine viewer started on http://localhost:3007");
     });
 
     function onConnectionFailed(e) {
