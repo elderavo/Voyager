@@ -212,12 +212,43 @@ class Voyager:
 
         # Try to parse as JSON (new system) first, fall back to code generation (old system)
         try:
-            intention, primitive_actions, missing_dependencies = self.action_agent.request_action(self.messages)
-            # For now, mark as failed since we haven't implemented execution yet
+            # Parse JSON from the ai_message content
+            import re
+            import json
+
+            response = ai_message.content
+            # Try to extract JSON from markdown code blocks if present
+            json_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+            json_matches = json_pattern.findall(response)
+
+            if json_matches:
+                json_str = json_matches[0]
+            else:
+                json_str = response
+
+            data = json.loads(json_str)
+            intention = data.get("intention", "")
+            primitive_actions = data.get("primitive_actions", [])
+            missing_dependencies = data.get("missing", [])
+
+            if not intention:
+                raise ValueError("JSON response missing 'intention' field")
+
+            print(f"\033[32m****Parsed JSON Action****")
+            print(f"Intention: {intention}")
+            print(f"Primitive Actions: {primitive_actions}")
+            print(f"Missing Dependencies: {missing_dependencies}\033[0m")
+
+            # For now, execute an empty step to get events, since we haven't implemented execution yet
             # This allows the system to continue without crashing
+            events = self.env.step("")  # Empty step to maintain event flow
+            self.recorder.record(events, self.task)
+            self.last_events = copy.deepcopy(events)
+
+            # Mark as failed since actual execution not implemented
             parsed_result = "JSON response received but execution not yet implemented"
             success = False
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
             # Fall back to old code generation system
             print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
             parsed_result = self.action_agent.process_ai_message(message=ai_message)
