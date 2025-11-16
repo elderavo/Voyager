@@ -14,6 +14,7 @@ from voyager.utils.json_utils import fix_and_parse_json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import Chroma
+from voyager.agents.task_queue import TaskQueue, Task
 
 
 class CurriculumAgent:
@@ -97,6 +98,10 @@ class CurriculumAgent:
         self.warm_up["inventory"] = 0
         self.warm_up["completed_tasks"] = 0
         self.warm_up["failed_tasks"] = 0
+
+        # Initialize task queue for HTN decomposition
+        self.task_queue = TaskQueue()
+        print(f"\033[35mInitialized TaskQueue in CurriculumAgent\033[0m")
 
     @property
     def default_warmup(self):
@@ -506,3 +511,57 @@ class CurriculumAgent:
         qa_answer = self.qa_llm.invoke(messages).content
         print(f"\033[31mCurriculum Agent {qa_answer}\033[0m")
         return qa_answer
+
+    def get_next_task_from_queue(self):
+        """
+        Get the next task from the HTN task queue.
+
+        This method integrates with the new task queue system, allowing
+        the curriculum agent to work through decomposed task dependencies.
+
+        Returns:
+            Task or None: Next task from queue, or None if queue is empty
+        """
+        if not self.task_queue.empty():
+            next_task = self.task_queue.pop()
+            print(f"\033[35m[CurriculumAgent] Popped task from queue: {next_task}\033[0m")
+            print(f"\033[35m[CurriculumAgent] Remaining queue size: {self.task_queue.size()}\033[0m")
+            return next_task
+        return None
+
+    def process_action_response(self, intention, primitive_actions, missing_dependencies):
+        """
+        Process the JSON response from ActionAgent and populate the task queue.
+
+        This replaces the old code-generation workflow with structured task decomposition.
+
+        Args:
+            intention (str): High-level goal from the action agent
+            primitive_actions (list): Actions that can be executed immediately
+            missing_dependencies (list): Dependencies that must be resolved first
+
+        Returns:
+            Task or None: The next task to execute, or None if nothing to do
+        """
+        print(f"\033[35m[CurriculumAgent] Processing action response:\033[0m")
+        print(f"\033[35m  Intention: {intention}\033[0m")
+        print(f"\033[35m  Primitive actions: {primitive_actions}\033[0m")
+        print(f"\033[35m  Missing dependencies: {missing_dependencies}\033[0m")
+
+        # First, queue up all missing dependencies (these must be resolved first)
+        for dep in missing_dependencies:
+            self.task_queue.push(Task("dependency", dep, parent=intention))
+
+        # Then queue primitive actions
+        for pa in primitive_actions:
+            # Primitive actions might be dicts with type and payload
+            if isinstance(pa, dict):
+                action_type = pa.get("type", "unknown")
+                payload = pa.get("payload", None)
+                self.task_queue.push(Task(action_type, payload, parent=intention))
+            else:
+                # Or simple string actions
+                self.task_queue.push(Task(pa, None, parent=intention))
+
+        # Return the next task to execute
+        return self.task_queue.pop()

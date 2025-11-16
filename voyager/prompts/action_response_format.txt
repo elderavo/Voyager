@@ -1,15 +1,30 @@
-Explain: ...
-Plan:
-1) ...
-2) ...
-3) ...
-...
-Code:
-```javascript
-// helper functions (only if needed, try to avoid them)
-...
-// main function after the helper functions
-async function yourMainFunctionName(bot) {
-  // ...
+You MUST output a JSON dictionary with the following fields:
+
+```json
+{
+  "intention": "<high_level_action>",
+  "primitive_actions": [ <actions executable right now> ],
+  "missing": [ "<dep1>", "<dep2>", ... ],
+  "notes": "<optional reasoning>"
+}
+```
+
+Rules:
+- You MAY NOT propose multi-step sequences that require crafting sub-items or gathering resources.
+- You MAY NOT assert crafting recipes. If you need an item, list it in "missing".
+- "primitive_actions" may only use the following operations: move, look, mine, place, attack, use, craft (only if prereqs are met), equip.
+- Each missing dependency must be a string in one of the following formats:
+  - "gather:<resource>"
+  - "craft:<item>"
+  - "tool_required:<tool_name>"
+  - "locate:<structure_id>"
+
+Example output:
+```json
+{
+  "intention": "craft_wooden_pickaxe",
+  "primitive_actions": [],
+  "missing": ["gather:logs", "craft:planks", "craft:sticks", "craft:crafting_table"],
+  "notes": "Cannot craft pickaxe without logs, planks, sticks, and table."
 }
 ```

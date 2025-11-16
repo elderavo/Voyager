@@ -1,5 +1,6 @@
 import re
 import time
+import json
 
 import voyager.utils as U
 from javascript import require
@@ -288,3 +289,55 @@ class ActionAgent:
                 if item:
                     chatlog.add(item)
         return "I also need " + ", ".join(chatlog) + "." if chatlog else ""
+
+    def request_action(self, messages):
+        """
+        Request action from LLM in JSON format instead of code generation.
+
+        This replaces the old code-generation pipeline with a structured
+        intention + dependency response format.
+
+        Args:
+            messages: List of LangChain messages for the LLM
+
+        Returns:
+            tuple: (intention, primitive_actions, missing_dependencies)
+
+        Raises:
+            ValueError: If LLM does not produce valid JSON
+        """
+        response = self.llm.invoke(messages).content
+
+        print(f"\033[33m****Action Agent LLM Response****\n{response}\033[0m")
+
+        try:
+            # Try to extract JSON from markdown code blocks if present
+            json_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+            json_matches = json_pattern.findall(response)
+
+            if json_matches:
+                # Use the first JSON block found
+                json_str = json_matches[0]
+            else:
+                # Assume the entire response is JSON
+                json_str = response
+
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM did not produce valid JSON: {e}\nResponse: {response}")
+
+        intention = data.get("intention", "")
+        primitive = data.get("primitive_actions", [])
+        missing = data.get("missing", [])
+        notes = data.get("notes", "")
+
+        if not intention:
+            raise ValueError("JSON response missing 'intention' field")
+
+        print(f"\033[32m****Parsed Action****")
+        print(f"Intention: {intention}")
+        print(f"Primitive Actions: {primitive}")
+        print(f"Missing Dependencies: {missing}")
+        print(f"Notes: {notes}\033[0m")
+
+        return intention, primitive, missing
