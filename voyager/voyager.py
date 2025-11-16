@@ -209,8 +209,19 @@ class Voyager:
         self.conversations.append(
             (self.messages[0].content, self.messages[1].content, ai_message.content)
         )
-        parsed_result = self.action_agent.process_ai_message(message=ai_message)
-        success = False
+
+        # Try to parse as JSON (new system) first, fall back to code generation (old system)
+        try:
+            intention, primitive_actions, missing_dependencies = self.action_agent.request_action(self.messages)
+            # For now, mark as failed since we haven't implemented execution yet
+            # This allows the system to continue without crashing
+            parsed_result = "JSON response received but execution not yet implemented"
+            success = False
+        except (ValueError, KeyError) as e:
+            # Fall back to old code generation system
+            print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
+            parsed_result = self.action_agent.process_ai_message(message=ai_message)
+
         if isinstance(parsed_result, dict):
             code = parsed_result["program_code"] + "\n" + parsed_result["exec_code"]
             events = self.env.step(
