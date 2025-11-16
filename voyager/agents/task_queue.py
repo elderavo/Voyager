@@ -20,13 +20,19 @@ class Task:
 class TaskQueue:
     def __init__(self):
         """
-        FIFO queue for managing hierarchical task decomposition.
+        LIFO stack for managing hierarchical task decomposition.
+        Uses stack (LIFO) to ensure dependencies execute before dependent tasks.
         """
         self.q = deque()
 
+    @property
+    def queue(self):
+        """Return list representation of queue for debugging."""
+        return list(self.q)
+
     def push(self, task):
         """
-        Add a task to the end of the queue.
+        Add a task to the top of the stack.
 
         Args:
             task (Task): Task to add
@@ -35,7 +41,7 @@ class TaskQueue:
 
     def push_many(self, tasks):
         """
-        Add multiple tasks to the queue.
+        Add multiple tasks to the stack.
 
         Args:
             tasks (list[Task]): List of tasks to add
@@ -45,12 +51,12 @@ class TaskQueue:
 
     def pop(self):
         """
-        Remove and return the first task from the queue.
+        Remove and return the top task from the stack (LIFO).
 
         Returns:
             Task or None: The next task, or None if queue is empty
         """
-        return self.q.popleft() if self.q else None
+        return self.q.pop() if self.q else None
 
     def empty(self):
         """

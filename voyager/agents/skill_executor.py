@@ -46,21 +46,20 @@ class SkillExecutor:
 
         if task.action == "craft":
             return self._execute_craft(task)
-        elif task.action == "gather":
+        elif task.action == "gather" or task.action == "mine":
+            # mine is just gather with tool requirements
             return self._execute_gather(task)
         elif task.action == "dependency":
             return self._resolve_dependency(task)
-        elif task.action == "move":
-            return self._execute_move(task)
-        elif task.action == "equip":
-            return self._execute_equip(task)
+        elif task.action == "smelt":
+            return self._execute_smelt(task)
         else:
             print(f"\033[31m[SkillExecutor] Unknown task action: {task.action}\033[0m")
             return []
 
     def _execute_craft(self, task):
         """
-        Execute a craft task, checking recipe and inventory.
+        Execute a craft task using mineflayer primitives.
 
         Args:
             task (Task): Craft task with payload = item name
@@ -71,44 +70,14 @@ class SkillExecutor:
         item_name = task.payload
         print(f"\033[36m[SkillExecutor] Attempting to craft: {item_name}\033[0m")
 
-        # Get recipe from fact source
-        recipes = self.facts.get_recipe(item_name)
-        if not recipes or len(recipes) == 0:
-            print(f"\033[31m[SkillExecutor] No recipe found for {item_name}\033[0m")
-            return []  # Cannot craft, skip
-
-        recipe = recipes[0]  # Use first recipe
-
-        # Check if crafting table is required
-        requires_table = self.facts.requires_crafting_table(item_name)
-        if requires_table and not self._has_access_to_crafting_table():
-            print(f"\033[33m[SkillExecutor] Crafting table required for {item_name}\033[0m")
-            return [Task("craft", "crafting_table", parent=task.parent)]
-
-        # Check inventory for ingredients
-        missing = []
-        ingredients = self.facts.get_ingredient_names(recipe)
-
-        for ingredient in ingredients:
-            if not self._has_item(ingredient):
-                print(f"\033[33m[SkillExecutor] Missing ingredient: {ingredient}\033[0m")
-                # Determine if ingredient needs crafting or gathering
-                # For now, assume it needs crafting (can be improved with item classification)
-                missing.append(Task("craft", ingredient, parent=task.parent))
-
-        if missing:
-            return missing
-
-        # All prerequisites met - execute craft primitive
-        print(f"\033[32m[SkillExecutor] Crafting {item_name}\033[0m")
-        # TODO: Call Mineflayer craftItem primitive
-        # self.bot.craftItem(item_name, 1)
-
-        return []  # Task completed
+        # For now, just return empty to execute via mineflayer
+        # The mineflayer craftItem function will handle checking ingredients and recipes
+        print(f"\033[32m[SkillExecutor] Will execute via mineflayer: craft {item_name}\033[0m")
+        return []  # No missing dependencies, ready to execute
 
     def _execute_gather(self, task):
         """
-        Execute a gather task, checking tool requirements.
+        Execute a gather/mine task using mineflayer primitives.
 
         Args:
             task (Task): Gather task with payload = resource/block name
@@ -117,34 +86,12 @@ class SkillExecutor:
             list[Task]: Missing tool tasks, or empty if gathering succeeded
         """
         resource = task.payload
-        print(f"\033[36m[SkillExecutor] Attempting to gather: {resource}\033[0m")
+        print(f"\033[36m[SkillExecutor] Attempting to gather/mine: {resource}\033[0m")
 
-        # Check tool requirements
-        required_tools = self.facts.required_tool(resource)
-
-        if required_tools and len(required_tools) > 0:
-            # Check if bot has any valid tool
-            has_valid_tool = False
-            for tool_id in required_tools.keys():
-                tool_name = self.bot.registry.items[tool_id].name
-                if self._has_item(tool_name):
-                    has_valid_tool = True
-                    break
-
-            if not has_valid_tool:
-                # Need to craft a tool
-                # For now, pick first valid tool (can be improved with tool priority)
-                tool_id = list(required_tools.keys())[0]
-                tool_name = self.bot.registry.items[tool_id].name
-                print(f"\033[33m[SkillExecutor] Need tool: {tool_name} to gather {resource}\033[0m")
-                return [Task("craft", tool_name, parent=task.parent)]
-
-        # All prerequisites met - execute gather primitive
-        print(f"\033[32m[SkillExecutor] Gathering {resource}\033[0m")
-        # TODO: Call Mineflayer mineBlock primitive
-        # self.bot.mineBlock(resource, 1)
-
-        return []  # Task completed
+        # For now, return empty to indicate task should be executed via mineflayer code
+        # The orchestrator will generate the actual mineflayer code
+        print(f"\033[32m[SkillExecutor] Will execute via mineflayer: mine {resource}\033[0m")
+        return []  # No missing dependencies, ready to execute
 
     def _resolve_dependency(self, task):
         """
@@ -179,40 +126,21 @@ class SkillExecutor:
             print(f"\033[31m[SkillExecutor] Unknown dependency type: {dep_type}\033[0m")
             return []
 
-    def _execute_move(self, task):
+    def _execute_smelt(self, task):
         """
-        Execute a move task.
+        Execute a smelt task.
 
         Args:
-            task (Task): Move task with payload = target position/direction
+            task (Task): Smelt task with payload = item to smelt
 
         Returns:
-            list[Task]: Empty (move is primitive action)
-        """
-        print(f"\033[36m[SkillExecutor] Moving to: {task.payload}\033[0m")
-        # TODO: Implement movement primitives
-        return []
-
-    def _execute_equip(self, task):
-        """
-        Execute an equip task.
-
-        Args:
-            task (Task): Equip task with payload = item name
-
-        Returns:
-            list[Task]: Empty if equipped, or craft task if item missing
+            list[Task]: Missing dependencies (fuel, furnace, raw material)
         """
         item_name = task.payload
-        print(f"\033[36m[SkillExecutor] Equipping: {item_name}\033[0m")
+        print(f"\033[36m[SkillExecutor] Attempting to smelt: {item_name}\033[0m")
 
-        if not self._has_item(item_name):
-            print(f"\033[33m[SkillExecutor] Cannot equip - don't have {item_name}\033[0m")
-            return [Task("craft", item_name, parent=task.parent)]
-
-        # TODO: Call Mineflayer equip primitive
-        # self.bot.equip(item_name)
-
+        # For now, return empty to execute via mineflayer
+        print(f"\033[32m[SkillExecutor] Will execute via mineflayer: smelt {item_name}\033[0m")
         return []
 
     def _has_item(self, item_name, count=1):
@@ -227,12 +155,24 @@ class SkillExecutor:
             bool: True if item is in inventory with sufficient count
         """
         try:
-            # TODO: Implement actual inventory check via Mineflayer
-            # For now, return False to trigger dependency resolution
-            # inv = self.bot.inventory.items()
-            # for item in inv:
-            #     if item.name == item_name and item.count >= count:
-            #         return True
+            # TODO:
+            # 1. Use the mineflayer bot's inventory API to inspect all items:
+            #    - Prefer `self.bot.inventory.items()` (or the equivalent for your version).
+            #    - Normalize `item_name` to the correct mineflayer item identifier
+            #      (e.g., via `self.bot.registry.itemsByName[item_name]` or a shared
+            #      name→id helper so Python and JS agree on naming).
+            # 2. Iterate inventory items and sum counts for all matching items:
+            #    - Match either by `item.name` or by numeric `item.type` (id), but be
+            #      consistent across the codebase.
+            #    - Take item metadata/variant into account if needed (e.g., different
+            #      wood types) using minecraft-data / registry information.
+            # 3. Return True if the total count for the requested item is >= `count`,
+            #    otherwise False.
+            # 4. Consider moving any name/id normalization into a shared utility
+            #    module (e.g., `voyager/minecraft/items.py`) so that other agents,
+            #    RecipeFacts, and the JS side all share the same mapping.
+            # 5. Keep this function as a thin wrapper over mineflayer; do not
+            #    replicate minecraft-data or recipe logic here.
             return False
         except Exception as e:
             print(f"\033[31m[SkillExecutor] Error checking inventory: {e}\033[0m")
@@ -246,13 +186,22 @@ class SkillExecutor:
             bool: True if crafting table is nearby or in inventory
         """
         try:
-            # TODO: Check both inventory and nearby blocks
-            # has_in_inventory = self._has_item("crafting_table")
-            # nearby_table = self.bot.findBlock({
-            #     "matching": self.bot.registry.blocksByName.crafting_table.id,
-            #     "maxDistance": 4
-            # })
-            # return has_in_inventory or nearby_table is not None
+            # TODO:
+            # 1. Check if the bot already has a crafting table item:
+            #    - Call `_has_item("crafting_table", 1)` using the same naming/
+            #      id convention as the JS side.
+            # 2. If not in inventory, use mineflayer's world query APIs:
+            #    - Use `self.bot.registry.blocksByName.crafting_table.id` (or
+            #      equivalent) to get the correct block id.
+            #    - Call `self.bot.findBlock({...})` with a reasonable search
+            #      radius (e.g., 4–6 blocks, potentially configurable).
+            # 3. Return True if either inventory or world search finds access
+            #    to a crafting table; otherwise return False.
+            # 4. Keep this as a pure availability check; pathfinding, walking
+            #    to the table, or placing one should be handled by higher-level
+            #    skills / tasks, not here.
+            # 5. If version differences matter, gate behavior behind
+            #    `self.bot.supportFeature(...)` rather than hardcoding ids.
             return False
         except Exception as e:
             print(f"\033[31m[SkillExecutor] Error checking for crafting table: {e}\033[0m")

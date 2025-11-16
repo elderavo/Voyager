@@ -225,7 +225,7 @@ app.post("/step", async (req, res) => {
 
     function onTick() {
         bot.globalTickCounter++;
-        if (bot.pathfinder.isMoving()) {
+        if (bot.pathfinder && bot.pathfinder.isMoving()) {
             bot.stuckTickCounter++;
             if (bot.stuckTickCounter >= 100) {
                 onStuck(1.5);

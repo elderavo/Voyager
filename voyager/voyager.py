@@ -11,6 +11,8 @@ from .agents import ActionAgent
 from .agents import CriticAgent
 from .agents import CurriculumAgent
 from .agents import SkillManager
+from .htn import HTNOrchestrator
+from .facts.recipes import RecipeFacts
 
 
 # TODO: remove event memory
@@ -155,6 +157,13 @@ class Voyager:
         self.recorder = U.EventRecorder(ckpt_dir=ckpt_dir, resume=resume)
         self.resume = resume
 
+        # Initialize HTN execution system
+        # Note: RecipeFacts needs bot instance, which is created after env.reset()
+        # We'll initialize it lazily in step() on first use
+        self.recipe_facts = None
+        self.htn_orchestrator = None
+        self._htn_initialized = False
+
         # init variables for rollout
         self.action_agent_rollout_num_iter = -1
         self.task = None
@@ -201,53 +210,67 @@ class Voyager:
     def close(self):
         self.env.close()
 
+    def _initialize_htn_if_needed(self):
+        """Lazy initialization of HTN system (needs bot instance from env)."""
+        if not self._htn_initialized:
+            try:
+                # Note: RecipeFacts needs bot, but bot might not be available yet
+                # We'll handle this gracefully
+                print(f"\033[36m[HTN] Initializing HTN execution system...\033[0m")
+                # For now, pass None for bot - executor will be initialized when bot is ready
+                self.htn_orchestrator = HTNOrchestrator(
+                    self.env,
+                    None,
+                    self.recorder,
+                    skill_programs=self.skill_manager.programs
+                )
+                self._htn_initialized = True
+                print(f"\033[36m[HTN] HTN system initialized\033[0m")
+            except Exception as e:
+                print(f"\033[31m[HTN] Failed to initialize HTN: {e}\033[0m")
+                self._htn_initialized = False
+
     def step(self):
         if self.action_agent_rollout_num_iter < 0:
             raise ValueError("Agent must be reset before stepping")
+
+        # Initialize HTN system if not already done
+        self._initialize_htn_if_needed()
+
         ai_message = self.action_agent.llm.invoke(self.messages)
         print(f"\033[34m****Action Agent ai message****\n{ai_message.content}\033[0m")
         self.conversations.append(
             (self.messages[0].content, self.messages[1].content, ai_message.content)
         )
 
-        # Try to parse as JSON (new system) first, fall back to code generation (old system)
+        # Try to use HTN system first, fall back to code generation
         try:
-            # Parse JSON from the ai_message content
-            import re
-            import json
+            if self.htn_orchestrator:
+                # Parse JSON using HTN orchestrator
+                intention, primitive_actions, missing_dependencies = (
+                    self.htn_orchestrator.parse_json_response(ai_message.content)
+                )
 
-            response = ai_message.content
-            # Try to extract JSON from markdown code blocks if present
-            json_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-            json_matches = json_pattern.findall(response)
+                # Queue tasks and execute them
+                self.htn_orchestrator.queue_tasks(intention, primitive_actions, missing_dependencies)
+                success, events, generated_code = self.htn_orchestrator.execute_queue(max_steps=20)
+                self.recorder.record(events, self.task)
+                self.last_events = copy.deepcopy(events)
 
-            if json_matches:
-                json_str = json_matches[0]
+                # Check if execution was successful and create proper result
+                if success and events:
+                    # Return dict format expected by the rest of the system
+                    parsed_result = {
+                        "program_code": generated_code,
+                        "program_name": intention,
+                        "exec_code": ""  # HTN code is already executed
+                    }
+                else:
+                    # Return string to trigger retry
+                    parsed_result = f"HTN: {intention} (execution incomplete)"
             else:
-                json_str = response
+                raise ValueError("HTN system not initialized")
 
-            data = json.loads(json_str)
-            intention = data.get("intention", "")
-            primitive_actions = data.get("primitive_actions", [])
-            missing_dependencies = data.get("missing", [])
-
-            if not intention:
-                raise ValueError("JSON response missing 'intention' field")
-
-            print(f"\033[32m****Parsed JSON Action****")
-            print(f"Intention: {intention}")
-            print(f"Primitive Actions: {primitive_actions}")
-            print(f"Missing Dependencies: {missing_dependencies}\033[0m")
-
-            # For now, execute an empty step to get events, since we haven't implemented execution yet
-            # This allows the system to continue without crashing
-            events = self.env.step("")  # Empty step to maintain event flow
-            self.recorder.record(events, self.task)
-            self.last_events = copy.deepcopy(events)
-
-            # Mark as failed since actual execution not implemented
-            parsed_result = "JSON response received but execution not yet implemented"
-            success = False
         except (ValueError, KeyError, json.JSONDecodeError) as e:
             # Fall back to old code generation system
             print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")

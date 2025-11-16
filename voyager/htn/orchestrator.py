@@ -23,7 +23,7 @@ class HTNOrchestrator:
     4. Maintaining execution state
     """
 
-    def __init__(self, env, facts, recorder=None):
+    def __init__(self, env, facts, recorder=None, skill_programs=""):
         """
         Initialize the HTN orchestrator.
 
@@ -31,15 +31,23 @@ class HTNOrchestrator:
             env: VoyagerEnv instance for executing actions
             facts: RecipeFacts instance for game mechanics validation
             recorder: Optional event recorder
+            skill_programs: String containing all skill/primitive function definitions
         """
         self.env = env
         self.facts = facts
         self.recorder = recorder
+        self.skill_programs = skill_programs
         self.task_queue = TaskQueue()
         self.executor = SkillExecutor(env.bot if hasattr(env, 'bot') else None, facts)
         self.last_intention = None
         self.last_primitives = []
         self.last_dependencies = []
+
+        # Decomposition cache: intention -> [list of primitive tasks]
+        self.decomposition_cache = {}
+
+        # Generated code accumulator
+        self.generated_code = []
 
     def parse_json_response(self, ai_message_content):
         """
@@ -139,14 +147,19 @@ class HTNOrchestrator:
             max_steps (int): Maximum number of tasks to execute
 
         Returns:
-            tuple: (success, events)
+            tuple: (success, events, generated_code)
                 success (bool): True if queue was emptied successfully
                 events (list): List of events from execution
+                generated_code (str): All generated code concatenated
         """
         steps = 0
         all_events = []
+        self.generated_code = []  # Reset code accumulator
 
         while not self.task_queue.empty() and steps < max_steps:
+            # Debug: Print current queue state
+            print(f"\033[35m[HTN DEBUG] Current queue: {self.task_queue.queue}\033[0m")
+
             task = self.task_queue.pop()
             print(f"\033[36m[HTN] Executing task {steps+1}: {task}\033[0m")
 
@@ -156,14 +169,24 @@ class HTNOrchestrator:
 
                 if missing:
                     print(f"\033[33m[HTN] Task requires {len(missing)} dependencies\033[0m")
+                    # Push original task back first (so it executes AFTER dependencies)
+                    self.task_queue.push(task)
+                    # Then push dependencies (so they execute BEFORE original task)
                     self.task_queue.push_many(missing)
-                else:
-                    print(f"\033[32m[HTN] Task completed successfully\033[0m")
+                    print(f"\033[33m[HTN] Re-queued original task after dependencies\033[0m")
+                    # Don't increment steps - we didn't actually execute anything
+                    continue
 
-                # TODO: Execute actual Mineflayer primitives and collect events
-                # For now, just do an empty step to maintain state
-                events = self.env.step("")
-                all_events.extend(events)
+                # Generate mineflayer code for this primitive action
+                code = self._generate_code_for_task(task)
+
+                if code:
+                    self.generated_code.append(code)
+                    print(f"\033[32m[HTN] Executing mineflayer code for {task}\033[0m")
+                    events = self.env.step(code, programs=self.skill_programs)
+                    all_events.extend(events)
+                else:
+                    print(f"\033[33m[HTN] No code generated, skipping execution\033[0m")
 
                 steps += 1
 
@@ -176,7 +199,52 @@ class HTNOrchestrator:
         success = self.task_queue.empty()
         print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
 
-        return success, all_events
+        combined_code = "\n".join(self.generated_code)
+        return success, all_events, combined_code
+
+    def _generate_code_for_task(self, task):
+        """
+        Generate mineflayer JavaScript code for a primitive task.
+
+        Args:
+            task (Task): Task to generate code for
+
+        Returns:
+            str: JavaScript code to execute, or None if no code needed
+        """
+        action = task.action
+        payload = task.payload
+
+        if action == "mine" or action == "gather":
+            # Generate code to mine a block
+            block_name = payload
+            return f"""
+// Mine {block_name}
+const {block_name.replace('_', '')}Block = bot.findBlock({{
+    matching: mcData.blocksByName.{block_name}.id,
+    maxDistance: 32
+}});
+if ({block_name.replace('_', '')}Block) {{
+    await mineBlock(bot, "{block_name}", 1);
+}} else {{
+    bot.chat("Cannot find {block_name} nearby");
+}}
+"""
+        elif action == "craft":
+            item_name = payload
+            return f"""
+// Craft {item_name}
+await craftItem(bot, "{item_name}", 1);
+"""
+        elif action == "smelt":
+            item_name = payload
+            return f"""
+// Smelt {item_name}
+await smeltItem(bot, "{item_name}", 1);
+"""
+        else:
+            print(f"\033[33m[HTN] No code generation for action: {action}\033[0m")
+            return None
 
     def execute_with_queue(self, intention, primitive_actions, missing_dependencies, max_steps=100):
         """
