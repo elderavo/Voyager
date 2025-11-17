@@ -229,7 +229,6 @@ class SkillExecutor:
         print(f"\033[32m[SkillExecutor] Will execute via mineflayer: smelt {normalized}\033[0m")
         return []
 
-    # TODO: Replace with mcData lookup... is this the right place for this? where can we place this check to just do it once? 
     def _normalize_item_name(self, item_name):
         """
         Normalize a free-form item string to a canonical mineflayer/minecraft-data item name.

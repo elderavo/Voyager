@@ -219,10 +219,10 @@ class Voyager:
                 from voyager.facts.recipes import RecipeFacts
                 recipe_facts = RecipeFacts(self.env)
                 self.htn_orchestrator = HTNOrchestrator(
-                    self.env,
-                    recipe_facts,
-                    self.recorder,
-                    skill_programs=self.skill_manager.programs
+                    env=self.env,
+                    facts=recipe_facts,
+                    skill_manager=self.skill_manager,
+                    recorder=self.recorder
                 )
                 self._htn_initialized = True
                 print(f"\033[36m[HTN] HTN system initialized\033[0m")
@@ -243,56 +243,95 @@ class Voyager:
             (self.messages[0].content, self.messages[1].content, ai_message.content)
         )
 
-        # Try to use HTN system first, fall back to code generation
+        # Use new HTN system: parse skill code from LLM, validate, and execute
+        parsed_result = None
         try:
             if self.htn_orchestrator:
-                # Parse JSON using HTN orchestrator
-                intention, primitive_actions, missing_dependencies = (
-                    self.htn_orchestrator.parse_json_response(ai_message.content)
+                # Parse LLM response (expecting program_code and program_name)
+                response = self.htn_orchestrator.parse_llm_response(ai_message.content)
+
+                # Validate that skill code only uses known functions
+                is_valid, error, function_calls = self.htn_orchestrator.validate_skill_code(
+                    response['program_code'],
+                    response['program_name']
                 )
 
-                # Queue tasks and execute them
-                self.htn_orchestrator.queue_tasks(intention, primitive_actions, missing_dependencies)
-                success, events, generated_code = self.htn_orchestrator.execute_queue(max_steps=20)
-                self.recorder.record(events, self.task)
-                self.last_events = copy.deepcopy(events)
-
-                # Check if execution was successful and create proper result
-                if success and events:
-                    # Return dict format expected by the rest of the system
-                    parsed_result = {
-                        "program_code": generated_code,
-                        "program_name": intention,
-                        "exec_code": ""  # HTN code is already executed
-                    }
+                if not is_valid:
+                    # Validation failed - return error to trigger LLM retry
+                    print(f"\033[31m[Voyager] Skill validation failed: {error}\033[0m")
+                    parsed_result = f"Validation Error: {error}\nPlease fix your code to only use available primitives and skills."
                 else:
-                    # Return string to trigger retry
-                    parsed_result = f"HTN: {intention} (execution incomplete)"
+                    # Validation passed - decompose and execute
+                    print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
+
+                    # Decompose skill into primitives for task queue (for future interruption support)
+                    self.htn_orchestrator.queue_tasks_from_skill(
+                        response['program_code'],
+                        response['program_name']
+                    )
+
+                    # Execute the skill directly
+                    success, events, exec_error = self.htn_orchestrator.execute_skill(
+                        response['program_code'],
+                        response['program_name']
+                    )
+
+                    if exec_error:
+                        # Execution error - return to trigger retry
+                        parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                    else:
+                        # Success - return result in expected format
+                        parsed_result = {
+                            "program_code": response['program_code'],
+                            "program_name": response['program_name'],
+                            "exec_code": ""  # Code already executed by HTN
+                        }
+                        self.recorder.record(events, self.task)
+                        self.last_events = copy.deepcopy(events)
             else:
                 raise ValueError("HTN system not initialized")
 
         except ValueError as e:
-            # ValueError from validation - return error message to trigger LLM retry
+            # JSON parsing or validation error - try to provide helpful feedback
             error_msg = str(e)
-            if "Unknown item" in error_msg or "Invalid dependency" in error_msg or "No recipe" in error_msg:
-                print(f"\033[33mValidation failed: {error_msg}\033[0m")
-                parsed_result = f"Validation Error: {error_msg}"
+            print(f"\033[33m[Voyager] Error in HTN processing: {error_msg}\033[0m")
+
+            # If it's a parsing/format error, let LLM retry
+            if "JSON" in error_msg or "field" in error_msg:
+                parsed_result = f"Format Error: {error_msg}\nPlease provide valid JSON with program_code and program_name fields."
             else:
-                # Other ValueError - fall back to code generation
-                print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
+                # Other errors - could be code that doesn't match expected format
+                # Fall back to old parsing method
+                print(f"\033[33m[Voyager] Falling back to traditional code parsing\033[0m")
+                try:
+                    parsed_result = self.action_agent.process_ai_message(message=ai_message)
+                except Exception as fallback_error:
+                    parsed_result = f"Error: {error_msg}\nFallback parsing also failed: {fallback_error}"
+
+        except Exception as e:
+            # Unexpected error - fall back to old system
+            print(f"\033[31m[Voyager] Unexpected error in HTN system: {e}\033[0m")
+            import traceback
+            traceback.print_exc()
+            try:
                 parsed_result = self.action_agent.process_ai_message(message=ai_message)
-        except (KeyError, json.JSONDecodeError) as e:
-            # Fall back to old code generation system
-            print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
-            parsed_result = self.action_agent.process_ai_message(message=ai_message)
+            except Exception as fallback_error:
+                parsed_result = f"System Error: {e}\nFallback also failed: {fallback_error}"
 
         if isinstance(parsed_result, dict):
-            code = parsed_result["program_code"] + "\n" + parsed_result["exec_code"]
-            events = self.env.step(
-                code,
-                programs=self.skill_manager.programs,
-            )
-            self.recorder.record(events, self.task)
+            # Check if code was already executed by HTN
+            if parsed_result.get("exec_code") == "" and self.last_events:
+                # HTN already executed, use cached events
+                events = self.last_events
+            else:
+                # Traditional execution path - execute code in env
+                code = parsed_result["program_code"] + "\n" + parsed_result["exec_code"]
+                events = self.env.step(
+                    code,
+                    programs=self.skill_manager.programs,
+                )
+                self.recorder.record(events, self.task)
+
             self.action_agent.update_chest_memory(events[-1][1]["nearbyChests"])
             success, critique = self.critic_agent.check_task_success(
                 events=events,

@@ -1,352 +1,334 @@
 """
-HTN Orchestrator - Main interface for HTN-based execution.
+HTN Orchestrator - Skill-based execution with validation and decomposition.
 
-This module provides a clean API for HTN execution, decoupling it from
-the main Voyager orchestration logic.
+This module provides the interface for:
+1. Parsing JavaScript skill code from LLM responses
+2. Validating skill code against known skills and primitives
+3. Decomposing skills into primitive execution stacks
+4. Executing skills in mineflayer environment
 """
 
 import re
 import json
-import copy
+from voyager.htn.code_analyzer import JavaScriptAnalyzer
 from voyager.agents.task_queue import Task, TaskQueue
-from voyager.agents.skill_executor import SkillExecutor
 
 
 class HTNOrchestrator:
     """
-    Orchestrates HTN-based task execution.
+    Orchestrates skill-based task execution with HTN decomposition.
 
-    This class provides a modular interface for:
-    1. Parsing JSON responses from LLM
-    2. Managing task queue
-    3. Executing tasks with fact validation
-    4. Maintaining execution state
+    The orchestrator validates LLM-generated JavaScript skills and decomposes
+    them into primitive operations for stack-based execution.
     """
 
-    def __init__(self, env, facts, recorder=None, skill_programs=""):
+    def __init__(self, env, facts, skill_manager, recorder=None):
         """
         Initialize the HTN orchestrator.
 
         Args:
             env: VoyagerEnv instance for executing actions
             facts: RecipeFacts instance for game mechanics validation
+            skill_manager: SkillManager instance for skill library access
             recorder: Optional event recorder
-            skill_programs: String containing all skill/primitive function definitions
         """
         self.env = env
         self.facts = facts
+        self.skill_manager = skill_manager
         self.recorder = recorder
-        self.skill_programs = skill_programs
+        self.analyzer = JavaScriptAnalyzer()
+
+        # Execution state
         self.task_queue = TaskQueue()
-        self.executor = SkillExecutor(facts, inventory={})
-        self.last_intention = None
-        self.last_primitives = []
-        self.last_dependencies = []
+        self.last_skill_name = None
+        self.last_skill_code = None
+        self.last_primitives_used = []
 
-        # Decomposition cache: intention -> [list of primitive tasks]
-        self.decomposition_cache = {}
+        # Primitive function names (mineflayer built-ins)
+        self.primitives = {
+            'mineBlock', 'craftItem', 'smeltItem', 'placeItem',
+            'killMob', 'exploreUntil', 'useChest'
+        }
 
-        # Generated code accumulator
-        self.generated_code = []
-
-    def parse_json_response(self, ai_message_content):
+    def parse_llm_response(self, ai_message_content):
         """
-        Parse JSON response from LLM.
+        Parse JSON response from LLM containing skill code.
+
+        Expected format:
+        {
+          "program_code": "async function ...",
+          "program_name": "functionName",
+          "reasoning": "explanation"
+        }
 
         Args:
             ai_message_content (str): Raw AI message content
 
         Returns:
-            tuple: (intention, primitive_actions, missing_dependencies)
+            dict: Parsed response with program_code, program_name, reasoning
 
         Raises:
-            ValueError: If JSON parsing fails
+            ValueError: If JSON parsing fails or required fields missing
         """
-        response = ai_message_content
-
         # Try to extract JSON from markdown code blocks
         json_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-        json_matches = json_pattern.findall(response)
+        json_matches = json_pattern.findall(ai_message_content)
 
-        if json_matches:
-            json_str = json_matches[0]
-        else:
-            json_str = response
+        json_str = json_matches[0] if json_matches else ai_message_content
 
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            raise ValueError(f"LLM did not produce valid JSON: {e}\nResponse: {response}")
+            raise ValueError(f"LLM did not produce valid JSON: {e}\nResponse: {ai_message_content}")
 
-        intention = data.get("intention", "")
-        primitive_actions = data.get("primitive_actions", [])
-        missing_dependencies = data.get("missing", [])
-        notes = data.get("notes", "")
+        # Validate required fields
+        required = ["program_code", "program_name"]
+        missing = [f for f in required if f not in data]
+        if missing:
+            raise ValueError(f"Missing required fields: {missing}")
 
-        if not intention:
-            raise ValueError("JSON response missing 'intention' field")
+        # Validate types
+        if not isinstance(data['program_code'], str):
+            raise ValueError("program_code must be a string")
+        if not isinstance(data['program_name'], str):
+            raise ValueError("program_name must be a string")
 
-        print(f"\033[32m[HTN] Parsed Action****")
-        print(f"  Intention: {intention}")
-        print(f"  Primitive Actions: {primitive_actions}")
-        print(f"  Missing Dependencies: {missing_dependencies}")
-        if notes:
-            print(f"  Notes: {notes}")
-        print(f"\033[0m")
+        print(f"\033[32m[HTN] Parsed skill from LLM:\033[0m")
+        print(f"  Name: {data['program_name']}")
+        print(f"  Reasoning: {data.get('reasoning', 'N/A')}")
+        print(f"  Code length: {len(data['program_code'])} chars")
 
-        # Store for later reference
-        self.last_intention = intention
-        self.last_primitives = primitive_actions
-        self.last_dependencies = missing_dependencies
+        return data
 
-        return intention, primitive_actions, missing_dependencies
-
-    def queue_tasks(self, intention, primitive_actions, missing_dependencies):
+    def validate_skill_code(self, skill_code, skill_name):
         """
-        Queue tasks based on LLM response.
+        Validate that skill code only uses known functions.
 
         Args:
-            intention (str): High-level goal
-            primitive_actions (list): Actions executable now
-            missing_dependencies (list): Dependencies to resolve
+            skill_code (str): JavaScript skill code
+            skill_name (str): Name of the skill
+
+        Returns:
+            tuple: (is_valid, error_message, function_calls)
+                is_valid (bool): True if all functions are known
+                error_message (str): Error details if invalid, None otherwise
+                function_calls (list): All function calls found in code
+        """
+        print(f"\033[36m[HTN] Validating skill: {skill_name}\033[0m")
+
+        # Build set of available functions
+        available_functions = set(self.primitives)
+        available_functions.update(self.skill_manager.skills.keys())
+
+        # Validate function calls
+        is_valid, error, function_calls = self.analyzer.validate_function_calls(
+            skill_code, available_functions
+        )
+
+        if not is_valid:
+            print(f"\033[31m[HTN] Validation failed: {error}\033[0m")
+            return False, error, function_calls
+
+        print(f"\033[32m[HTN] Validation passed. Functions used: {function_calls}\033[0m")
+        return True, None, function_calls
+
+    def decompose_skill_to_primitives(self, skill_code, skill_name, known_skills=None):
+        """
+        Recursively decompose skill into primitive operations.
+
+        This builds a stack of primitive operations that must be executed
+        to accomplish the skill. Skills are decomposed into their constituent
+        primitives by recursively analyzing function calls.
+
+        Args:
+            skill_code (str): JavaScript skill code
+            skill_name (str): Name of the skill
+            known_skills (dict): Known skills {name: {code, description}}
+
+        Returns:
+            list: Ordered list of primitive tasks for execution stack
+        """
+        if known_skills is None:
+            known_skills = self.skill_manager.skills
+
+        print(f"\033[36m[HTN] Decomposing skill: {skill_name}\033[0m")
+
+        try:
+            function_calls = self.analyzer.extract_function_calls(skill_code)
+        except ValueError as e:
+            print(f"\033[31m[HTN] Failed to extract function calls: {e}\033[0m")
+            return []
+
+        execution_stack = []
+
+        for call in function_calls:
+            if call in self.primitives:
+                # It's a primitive - add to stack
+                execution_stack.append(Task(
+                    action="primitive",
+                    payload={"function": call, "skill": skill_name},
+                    parent=skill_name
+                ))
+                print(f"\033[32m[HTN]   Primitive: {call}\033[0m")
+
+            elif call in known_skills:
+                # It's a known skill - recursively decompose
+                print(f"\033[33m[HTN]   Decomposing sub-skill: {call}\033[0m")
+                sub_skill_code = known_skills[call]['code']
+                sub_tasks = self.decompose_skill_to_primitives(
+                    sub_skill_code, call, known_skills
+                )
+                execution_stack.extend(sub_tasks)
+
+            else:
+                # Unknown function (should have been caught in validation)
+                print(f"\033[31m[HTN]   Warning: Unknown function {call} (skipping)\033[0m")
+
+        print(f"\033[36m[HTN] Decomposition complete: {len(execution_stack)} primitive tasks\033[0m")
+        return execution_stack
+
+    def execute_skill(self, skill_code, skill_name):
+        """
+        Execute a validated skill in the mineflayer environment.
+
+        Args:
+            skill_code (str): JavaScript skill code
+            skill_name (str): Name of the skill
+
+        Returns:
+            tuple: (success, events, error)
+                success (bool): True if execution succeeded
+                events (list): List of events from execution
+                error (str): Error message if failed, None otherwise
+        """
+        print(f"\033[32m[HTN] Executing skill: {skill_name}\033[0m")
+
+        try:
+            # Get all available programs (skills + primitives)
+            all_programs = self.skill_manager.programs
+
+            # Execute the skill code with full program context
+            events = self.env.step(code=skill_code, programs=all_programs)
+
+            # Check for execution errors
+            success = self._check_execution_success(events)
+
+            if success:
+                print(f"\033[32m[HTN] Skill executed successfully: {skill_name}\033[0m")
+            else:
+                print(f"\033[33m[HTN] Skill execution completed with warnings: {skill_name}\033[0m")
+
+            # Store execution state
+            self.last_skill_name = skill_name
+            self.last_skill_code = skill_code
+
+            return success, events, None
+
+        except Exception as e:
+            error_msg = f"Execution error: {e}"
+            print(f"\033[31m[HTN] {error_msg}\033[0m")
+            return False, [], error_msg
+
+    def _check_execution_success(self, events):
+        """
+        Check if execution was successful based on events.
+
+        Args:
+            events (list): List of execution events
+
+        Returns:
+            bool: True if no errors detected
+        """
+        if not events:
+            return False
+
+        # Check for error events
+        for event_type, event_data in events:
+            if event_type == "onError":
+                error_msg = event_data.get("onError", "Unknown error")
+                print(f"\033[31m[HTN] Execution error: {error_msg}\033[0m")
+                return False
+
+        return True
+
+    def queue_tasks_from_skill(self, skill_code, skill_name):
+        """
+        Decompose skill and queue primitive tasks for execution.
+
+        This is used when we want to execute a skill as a series of
+        primitive operations on the task queue (for future priority-based
+        interruption support).
+
+        Args:
+            skill_code (str): JavaScript skill code
+            skill_name (str): Name of the skill
 
         Returns:
             int: Number of tasks queued
         """
+        # Decompose skill into primitives
+        primitive_tasks = self.decompose_skill_to_primitives(skill_code, skill_name)
+
+        # Queue tasks (in reverse order since stack is LIFO)
         initial_size = self.task_queue.size()
-
-        # Queue dependencies first (will be resolved in order)
-        for dep in missing_dependencies:
-            self.task_queue.push(Task("dependency", dep, parent=intention))
-
-        # Then queue primitive actions
-        for pa in primitive_actions:
-            if isinstance(pa, dict):
-                action_type = pa.get("type", "unknown")
-                payload = pa.get("payload", None)
-                self.task_queue.push(Task(action_type, payload, parent=intention))
-            elif isinstance(pa, str):
-                # Parse string format like "mine:oak_log"
-                if ":" in pa:
-                    action_type, payload = pa.split(":", 1)
-                    self.task_queue.push(Task(action_type, payload, parent=intention))
-                else:
-                    self.task_queue.push(Task(pa, None, parent=intention))
-            else:
-                self.task_queue.push(Task(str(pa), None, parent=intention))
+        for task in reversed(primitive_tasks):
+            self.task_queue.push(task)
 
         tasks_added = self.task_queue.size() - initial_size
-        print(f"\033[36m[HTN] Queued {tasks_added} tasks (queue size: {self.task_queue.size()})\033[0m")
+        print(f"\033[36m[HTN] Queued {tasks_added} primitive tasks for {skill_name}\033[0m")
+
+        # Store for reference
+        self.last_primitives_used = [t.payload['function'] for t in primitive_tasks]
+
         return tasks_added
 
-    def execute_queue(self, max_steps=100):
+    def execute_queued_tasks(self, max_steps=100):
         """
-        Execute tasks from the queue.
+        Execute tasks from the queue (for future use with interruption).
+
+        Currently not used - skills are executed directly. This method
+        will be important when we add priority-based task interruption.
 
         Args:
             max_steps (int): Maximum number of tasks to execute
 
         Returns:
-            tuple: (success, events, generated_code)
-                success (bool): True if queue was emptied successfully
-                events (list): List of events from execution
-                generated_code (str): All generated code concatenated
+            tuple: (success, events_list)
+                success (bool): True if all tasks completed
+                events_list (list): All events from execution
         """
         steps = 0
         all_events = []
-        self.generated_code = []  # Reset code accumulator
+
+        print(f"\033[36m[HTN] Starting queued task execution (max {max_steps} steps)\033[0m")
 
         while not self.task_queue.empty() and steps < max_steps:
-            # Debug: Print current queue state
-            print(f"\033[35m[HTN DEBUG] Current queue: {self.task_queue.queue}\033[0m")
-
             task = self.task_queue.pop()
             print(f"\033[36m[HTN] Executing task {steps+1}: {task}\033[0m")
 
-            try:
-                # Execute task and get missing dependencies
-                missing = self.executor.execute(task)
+            # For now, tasks are just markers - actual execution happens
+            # via the full skill code
+            steps += 1
 
-                if missing:
-                    print(f"\033[33m[HTN] Task requires {len(missing)} dependencies\033[0m")
-                    # Push original task back first (so it executes AFTER dependencies)
-                    self.task_queue.push(task)
-                    # Then push dependencies (so they execute BEFORE original task)
-                    self.task_queue.push_many(missing)
-                    print(f"\033[33m[HTN] Re-queued original task after dependencies\033[0m")
-                    # Don't increment steps - we didn't actually execute anything
-                    continue
+        success = self.task_queue.empty()
+        print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'}\033[0m")
 
-                # Generate mineflayer code for this primitive action
-                code = self._generate_code_for_task(task)
-
-                if code:
-                    self.generated_code.append(code)
-                    print(f"\033[32m[HTN] Executing mineflayer code for {task}\033[0m")
-                    events = self.env.step(code, programs=self.skill_programs)
-                    all_events.extend(events)
-
-                    # Update executor inventory from latest observation
-                    if events and len(events) > 0:
-                        latest_inv = events[-1][1].get('inventory', {})
-                        self.executor.update_inventory(latest_inv)
-                else:
-                    print(f"\033[33m[HTN] No code generated, skipping execution\033[0m")
-
-                steps += 1
-
-            except ValueError as e:
-                # ValueError indicates invalid item name or other validation error
-                # Re-raise to propagate to LLM for retry with corrected information
-                print(f"\033[31m[HTN] Validation error: {e}\033[0m")
-                raise
-            except Exception as e:
-                print(f"\033[31m[HTN] Task execution error: {e}\033[0m")
-                # Continue to next task instead of crashing for other errors
-                steps += 1
-                continue
-
-        # Consider execution successful only if the queue is empty AND
-        # we actually executed at least one primitive task. This avoids
-        # treating "no-op" intentions (e.g., impossible tasks that yield
-        # no primitives) as successful executions.
-        success = self.task_queue.empty() and steps > 0
-        print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
-
-        combined_code = "\n".join(self.generated_code)
-        return success, all_events, combined_code
-
-    def _generate_code_for_task(self, task):
-        """
-        Generate mineflayer JavaScript code for a primitive task.
-
-        Args:
-            task (Task): Task to generate code for
-
-        Returns:
-            str: JavaScript code to execute, or None if no code needed
-        """
-        action = task.action
-        payload = task.payload
-
-        if action == "mine" or action == "gather":
-            # Generate code to mine a block
-            block_name = payload
-            return f"""
-// Mine {block_name}
-const {block_name.replace('_', '')}Block = bot.findBlock({{
-    matching: mcData.blocksByName.{block_name}.id,
-    maxDistance: 32
-}});
-if ({block_name.replace('_', '')}Block) {{
-    await mineBlock(bot, "{block_name}", 1);
-}} else {{
-    bot.chat("Cannot find {block_name} nearby");
-}}
-"""
-        elif action == "craft":
-            item_name = payload
-            return f"""
-// Craft {item_name}
-await craftItem(bot, "{item_name}", 1);
-"""
-        elif action == "smelt":
-            item_name = payload
-            return f"""
-// Smelt {item_name}
-await smeltItem(bot, "{item_name}", 1);
-"""
-        elif action == "equip":
-            item_name = payload
-            return f"""
-// Equip {item_name}
-const {item_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{item_name}');
-if ({item_name.replace('_', '')}Item) {{
-    await bot.equip({item_name.replace('_', '')}Item, 'hand');
-    bot.chat("Equipped {item_name}");
-}} else {{
-    bot.chat("Cannot find {item_name} in inventory");
-}}
-"""
-        elif action == "attack":
-            entity_name = payload
-            return f"""
-// Attack {entity_name}
-const {entity_name.replace('_', '')}Entity = bot.nearestEntity(entity => {{
-    return entity.name === '{entity_name}' && entity.position.distanceTo(bot.entity.position) < 32;
-}});
-if ({entity_name.replace('_', '')}Entity) {{
-    await bot.pvp.attack({entity_name.replace('_', '')}Entity);
-    bot.chat("Attacked {entity_name}");
-}} else {{
-    bot.chat("Cannot find {entity_name} nearby");
-}}
-"""
-        elif action == "place":
-            block_name = payload
-            return f"""
-// Place {block_name}
-const {block_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{block_name}');
-if ({block_name.replace('_', '')}Item) {{
-    const referenceBlock = bot.blockAt(bot.entity.position.offset(0, -1, 0));
-    const faceVector = new Vec3(0, 1, 0);
-    await bot.equip({block_name.replace('_', '')}Item, 'hand');
-    await bot.placeBlock(referenceBlock, faceVector);
-    bot.chat("Placed {block_name}");
-}} else {{
-    bot.chat("Cannot find {block_name} in inventory");
-}}
-"""
-        elif action == "use":
-            item_name = payload
-            return f"""
-// Use {item_name}
-const {item_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{item_name}');
-if ({item_name.replace('_', '')}Item) {{
-    await bot.equip({item_name.replace('_', '')}Item, 'hand');
-    await bot.activateItem();
-    bot.chat("Used {item_name}");
-}} else {{
-    bot.chat("Cannot find {item_name} in inventory");
-}}
-"""
-        else:
-            print(f"\033[33m[HTN] No code generation for action: {action}\033[0m")
-            return None
-
-    def execute_with_queue(self, intention, primitive_actions, missing_dependencies, max_steps=100):
-        """
-        Convenience method: queue tasks and execute.
-
-        Args:
-            intention (str): High-level goal
-            primitive_actions (list): Actions executable now
-            missing_dependencies (list): Dependencies to resolve
-            max_steps (int): Maximum steps to execute
-
-        Returns:
-            tuple: (success, events)
-        """
-        self.queue_tasks(intention, primitive_actions, missing_dependencies)
-        return self.execute_queue(max_steps)
+        return success, all_events
 
     def get_execution_summary(self):
         """
         Get summary of last execution.
 
         Returns:
-            dict: Execution summary with intention, primitives, dependencies
+            dict: Execution summary with skill info and primitives used
         """
         return {
-            "intention": self.last_intention,
-            "primitive_actions": self.last_primitives,
-            "missing_dependencies": self.last_dependencies,
+            "skill_name": self.last_skill_name,
+            "primitives_used": self.last_primitives_used,
             "queue_size": self.task_queue.size(),
         }
 
     def reset_queue(self):
-        """
-        Clear the task queue.
-        """
+        """Clear the task queue."""
         self.task_queue.clear()
         print(f"\033[36m[HTN] Queue cleared\033[0m")

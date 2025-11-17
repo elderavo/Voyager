@@ -2,29 +2,26 @@ You MUST output a JSON dictionary with the following fields:
 
 ```json
 {
-  "intention": "<high_level_action>",
-  "primitive_actions": [ <actions executable right now> ],
-  "missing": [ "<dep1>", "<dep2>", ... ],
-  "notes": "<optional reasoning>"
+  "program_code": "<complete JavaScript async function>",
+  "program_name": "<function_name_in_camelCase>",
+  "reasoning": "<brief explanation of your approach>"
 }
 ```
 
 Rules:
-- You MAY NOT propose multi-step sequences that require crafting sub-items or gathering resources.
-- You MAY NOT assert crafting recipes. If you need an item, list it in "missing".
-- "primitive_actions" may only use the following operations: move, look, mine, place, attack, use, craft (only if prereqs are met), equip.
-- Each missing dependency must be a string in one of the following formats:
-  - "gather:<resource>"
-  - "craft:<item>"
-  - "tool_required:<tool_name>"
-  - "locate:<structure_id>"
+- "program_code" must be a complete, valid JavaScript async function
+- The function must be named according to "program_name"
+- The function must take a single parameter: bot
+- You must use ONLY primitives and known skills from the available list
+- Check inventory before using items: bot.inventory.count(mcData.itemsByName.item_name.id)
+- Handle missing materials by calling other skills/primitives
+- Use bot.chat() to communicate what you're doing
 
 Example output:
 ```json
 {
-  "intention": "craft_wooden_pickaxe",
-  "primitive_actions": [],
-  "missing": ["gather:logs", "craft:planks", "craft:sticks", "craft:crafting_table"],
-  "notes": "Cannot craft pickaxe without logs, planks, sticks, and table."
+  "program_code": "async function craftStonePickaxe(bot) {\n  const cobblestoneCount = bot.inventory.count(mcData.itemsByName.cobblestone.id);\n  const sticksCount = bot.inventory.count(mcData.itemsByName.stick.id);\n  \n  if (cobblestoneCount < 3) {\n    bot.chat('Need more cobblestone');\n    await mineBlock(bot, 'stone', 3 - cobblestoneCount);\n  }\n  \n  if (sticksCount < 2) {\n    bot.chat('Need sticks');\n    await craftItem(bot, 'stick', 2 - sticksCount);\n  }\n  \n  await craftItem(bot, 'stone_pickaxe', 1);\n  bot.chat('Stone pickaxe crafted!');\n}",
+  "program_name": "craftStonePickaxe",
+  "reasoning": "Check for cobblestone and sticks, mine/craft missing materials, then craft the pickaxe"
 }
 ```
