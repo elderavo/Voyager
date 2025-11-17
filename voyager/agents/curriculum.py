@@ -259,7 +259,11 @@ class CurriculumAgent:
             return task, context
 
         # hard code task when inventory is almost full
-        inventoryUsed = events[-1][1]["status"]["inventoryUsed"]
+        if events:
+            inventoryUsed = events[-1][1]["status"].get("inventoryUsed", 0)
+        else:
+            inventoryUsed = 0
+
         if inventoryUsed >= 33:
             if chest_observation != "Chests: None\n\n":
                 chests = chest_observation[8:-2].split("\n")
@@ -279,11 +283,12 @@ class CurriculumAgent:
                             "You can use bot.inventoryUsed() to check how many inventory slots are used."
                         )
                         return task, context
-            if "chest" in events[-1][1]["inventory"]:
+
+            if events and "chest" in events[-1][1]["inventory"]:
                 task = "Place a chest"
                 context = (
-                    f"You have a chest in inventory, place it around you. "
-                    f"If chests is not None, or nearby blocks contains chest, this task is success."
+                    "You have a chest in inventory, place it around you. "
+                    "If chests is not None, or nearby blocks contains chest, this task is success."
                 )
             else:
                 task = "Craft 1 chest"

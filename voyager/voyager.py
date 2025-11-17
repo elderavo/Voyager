@@ -211,16 +211,16 @@ class Voyager:
         self.env.close()
 
     def _initialize_htn_if_needed(self):
-        """Lazy initialization of HTN system (needs bot instance from env)."""
+        """Lazy initialization of HTN system."""
         if not self._htn_initialized:
             try:
-                # Note: RecipeFacts needs bot, but bot might not be available yet
-                # We'll handle this gracefully
+                # Initialize RecipeFacts with env for HTTP-based registry access
                 print(f"\033[36m[HTN] Initializing HTN execution system...\033[0m")
-                # For now, pass None for bot - executor will be initialized when bot is ready
+                from voyager.facts.recipes import RecipeFacts
+                recipe_facts = RecipeFacts(self.env)
                 self.htn_orchestrator = HTNOrchestrator(
                     self.env,
-                    None,
+                    recipe_facts,
                     self.recorder,
                     skill_programs=self.skill_manager.programs
                 )
@@ -271,7 +271,17 @@ class Voyager:
             else:
                 raise ValueError("HTN system not initialized")
 
-        except (ValueError, KeyError, json.JSONDecodeError) as e:
+        except ValueError as e:
+            # ValueError from validation - return error message to trigger LLM retry
+            error_msg = str(e)
+            if "Unknown item" in error_msg or "Invalid dependency" in error_msg or "No recipe" in error_msg:
+                print(f"\033[33mValidation failed: {error_msg}\033[0m")
+                parsed_result = f"Validation Error: {error_msg}"
+            else:
+                # Other ValueError - fall back to code generation
+                print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
+                parsed_result = self.action_agent.process_ai_message(message=ai_message)
+        except (KeyError, json.JSONDecodeError) as e:
             # Fall back to old code generation system
             print(f"\033[33mJSON parsing failed, falling back to code generation: {e}\033[0m")
             parsed_result = self.action_agent.process_ai_message(message=ai_message)
@@ -327,6 +337,7 @@ class Voyager:
             assert isinstance(parsed_result, str)
             self.recorder.record([], self.task)
             print(f"\033[34m{parsed_result} Trying again!\033[0m")
+            success = False  # String result means failure - need to retry
         assert len(self.messages) == 2
         self.action_agent_rollout_num_iter += 1
         done = (
@@ -403,15 +414,26 @@ class Voyager:
                     "success": False,
                 }
                 # reset bot status here
-                self.last_events = self.env.reset(
-                    options={
-                        "mode": "hard",
-                        "wait_ticks": self.env_wait_ticks,
-                        "inventory": self.last_events[-1][1]["inventory"],
-                        "equipment": self.last_events[-1][1]["status"]["equipment"],
-                        "position": self.last_events[-1][1]["status"]["position"],
-                    }
-                )
+                # Check if last_events has data before trying to restore state
+                if self.last_events and len(self.last_events) > 0:
+                    self.last_events = self.env.reset(
+                        options={
+                            "mode": "hard",
+                            "wait_ticks": self.env_wait_ticks,
+                            "inventory": self.last_events[-1][1]["inventory"],
+                            "equipment": self.last_events[-1][1]["status"]["equipment"],
+                            "position": self.last_events[-1][1]["status"]["position"],
+                        }
+                    )
+                else:
+                    # No previous state to restore, do a clean reset
+                    print("\033[33mNo previous state to restore, performing clean reset\033[0m")
+                    self.last_events = self.env.reset(
+                        options={
+                            "mode": "hard",
+                            "wait_ticks": self.env_wait_ticks,
+                        }
+                    )
                 # use red color background to print the error
                 print("Your last round rollout terminated due to error:")
                 print(f"\033[41m{e}\033[0m")

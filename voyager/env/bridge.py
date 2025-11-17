@@ -208,3 +208,41 @@ class VoyagerEnv(gym.Env):
             else:
                 print(res.json())
         return self.server_paused
+
+    def get_registry(self, registry_type="items", name=None, timeout=10):
+        """
+        Get registry data from mineflayer server.
+
+        Args:
+            registry_type (str): Type of registry - 'items', 'blocks', or 'recipes'
+            name (str, optional): Specific item/block name to query
+            timeout (int): Request timeout in seconds
+
+        Returns:
+            dict, list, or None: Registry data or None if request fails
+        """
+        if not self.connected:
+            print("\033[33m[VoyagerEnv] Cannot get registry - bot not connected\033[0m")
+            return None
+
+        try:
+            data = {"type": registry_type}
+            if name:
+                data["name"] = name
+
+            res = requests.post(
+                f"{self.server}/registry",
+                json=data,
+                timeout=timeout
+            )
+
+            if res.status_code == 200:
+                return res.json()
+            else:
+                error_msg = res.json().get("error", "Unknown error")
+                print(f"\033[31m[VoyagerEnv] Registry request failed: {error_msg}\033[0m")
+                return None
+
+        except Exception as e:
+            print(f"\033[31m[VoyagerEnv] Error fetching registry: {e}\033[0m")
+            return None

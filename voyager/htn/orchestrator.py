@@ -38,7 +38,7 @@ class HTNOrchestrator:
         self.recorder = recorder
         self.skill_programs = skill_programs
         self.task_queue = TaskQueue()
-        self.executor = SkillExecutor(env.bot if hasattr(env, 'bot') else None, facts)
+        self.executor = SkillExecutor(facts, inventory={})
         self.last_intention = None
         self.last_primitives = []
         self.last_dependencies = []
@@ -185,18 +185,32 @@ class HTNOrchestrator:
                     print(f"\033[32m[HTN] Executing mineflayer code for {task}\033[0m")
                     events = self.env.step(code, programs=self.skill_programs)
                     all_events.extend(events)
+
+                    # Update executor inventory from latest observation
+                    if events and len(events) > 0:
+                        latest_inv = events[-1][1].get('inventory', {})
+                        self.executor.update_inventory(latest_inv)
                 else:
                     print(f"\033[33m[HTN] No code generated, skipping execution\033[0m")
 
                 steps += 1
 
+            except ValueError as e:
+                # ValueError indicates invalid item name or other validation error
+                # Re-raise to propagate to LLM for retry with corrected information
+                print(f"\033[31m[HTN] Validation error: {e}\033[0m")
+                raise
             except Exception as e:
                 print(f"\033[31m[HTN] Task execution error: {e}\033[0m")
-                # Continue to next task instead of crashing
+                # Continue to next task instead of crashing for other errors
                 steps += 1
                 continue
 
-        success = self.task_queue.empty()
+        # Consider execution successful only if the queue is empty AND
+        # we actually executed at least one primitive task. This avoids
+        # treating "no-op" intentions (e.g., impossible tasks that yield
+        # no primitives) as successful executions.
+        success = self.task_queue.empty() and steps > 0
         print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
 
         combined_code = "\n".join(self.generated_code)
@@ -241,6 +255,60 @@ await craftItem(bot, "{item_name}", 1);
             return f"""
 // Smelt {item_name}
 await smeltItem(bot, "{item_name}", 1);
+"""
+        elif action == "equip":
+            item_name = payload
+            return f"""
+// Equip {item_name}
+const {item_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{item_name}');
+if ({item_name.replace('_', '')}Item) {{
+    await bot.equip({item_name.replace('_', '')}Item, 'hand');
+    bot.chat("Equipped {item_name}");
+}} else {{
+    bot.chat("Cannot find {item_name} in inventory");
+}}
+"""
+        elif action == "attack":
+            entity_name = payload
+            return f"""
+// Attack {entity_name}
+const {entity_name.replace('_', '')}Entity = bot.nearestEntity(entity => {{
+    return entity.name === '{entity_name}' && entity.position.distanceTo(bot.entity.position) < 32;
+}});
+if ({entity_name.replace('_', '')}Entity) {{
+    await bot.pvp.attack({entity_name.replace('_', '')}Entity);
+    bot.chat("Attacked {entity_name}");
+}} else {{
+    bot.chat("Cannot find {entity_name} nearby");
+}}
+"""
+        elif action == "place":
+            block_name = payload
+            return f"""
+// Place {block_name}
+const {block_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{block_name}');
+if ({block_name.replace('_', '')}Item) {{
+    const referenceBlock = bot.blockAt(bot.entity.position.offset(0, -1, 0));
+    const faceVector = new Vec3(0, 1, 0);
+    await bot.equip({block_name.replace('_', '')}Item, 'hand');
+    await bot.placeBlock(referenceBlock, faceVector);
+    bot.chat("Placed {block_name}");
+}} else {{
+    bot.chat("Cannot find {block_name} in inventory");
+}}
+"""
+        elif action == "use":
+            item_name = payload
+            return f"""
+// Use {item_name}
+const {item_name.replace('_', '')}Item = bot.inventory.items().find(item => item.name === '{item_name}');
+if ({item_name.replace('_', '')}Item) {{
+    await bot.equip({item_name.replace('_', '')}Item, 'hand');
+    await bot.activateItem();
+    bot.chat("Used {item_name}");
+}} else {{
+    bot.chat("Cannot find {item_name} in inventory");
+}}
 """
         else:
             print(f"\033[33m[HTN] No code generation for action: {action}\033[0m")

@@ -428,6 +428,119 @@ app.post("/pause", (req, res) => {
     });
 });
 
+app.post("/registry", (req, res) => {
+    if (!bot) {
+        res.status(400).json({ error: "Bot not spawned" });
+        return;
+    }
+
+    const mcData = require("minecraft-data")(bot.version);
+    const type = req.body.type; // 'items', 'blocks', or 'recipes'
+    const name = req.body.name; // optional: specific item/block name
+
+    try {
+        if (name) {
+            // Return specific item/block
+            if (type === "items") {
+                const item = mcData.itemsByName[name];
+                res.json(item || null);
+            } else if (type === "blocks") {
+                const block = mcData.blocksByName[name];
+                res.json(block || null);
+            } else if (type === "recipes") {
+                const item = mcData.itemsByName[name];
+                console.log(`[Registry] Looking up recipes for "${name}"`);
+                console.log(`[Registry] Item found in mcData:`, item ? `ID=${item.id}, name=${item.name}` : 'null');
+
+                // Check if bot has recipe data loaded
+                if (bot.recipesFor) {
+                    console.log(`[Registry] bot.recipesFor is available`);
+                } else {
+                    console.log(`[Registry] ERROR: bot.recipesFor is NOT available`);
+                }
+
+                if (item) {
+                    // Try to find crafting table in bot's inventory or nearby
+                    const craftingTable = bot.findBlock({
+                        matching: mcData.blocksByName.crafting_table?.id,
+                        maxDistance: 32
+                    });
+                    console.log(`[Registry] Crafting table available:`, craftingTable ? 'yes' : 'no');
+
+                    // Try without crafting table first (for 2x2 recipes)
+                    let recipes = null;
+                    try {
+                        recipes = bot.recipesFor(item.id, null, 1, null);
+                        console.log(`[Registry] bot.recipesFor(without table) returned:`, recipes ? `${recipes.length} recipes` : 'null');
+                    } catch (err) {
+                        console.log(`[Registry] ERROR calling bot.recipesFor:`, err.message);
+                    }
+
+                    // If no recipes found and crafting table exists, try with crafting table
+                    if ((!recipes || recipes.length === 0) && craftingTable) {
+                        recipes = bot.recipesFor(item.id, null, 1, craftingTable);
+                        console.log(`[Registry] bot.recipesFor(with table) returned:`, recipes ? `${recipes.length} recipes` : 'null');
+                    }
+
+                    if (recipes && recipes.length > 0) {
+                        console.log(`[Registry] First recipe:`, JSON.stringify(recipes[0], null, 2));
+                    }
+                    // Enhance recipes with ingredient names
+                    if (recipes && recipes.length > 0) {
+                        const enhancedRecipes = recipes.map(recipe => {
+                            const ingredientNames = [];
+                            if (recipe.delta) {
+                                // Shaped/shapeless recipe with delta
+                                recipe.delta.forEach(item => {
+                                    if (item.count < 0) {  // Negative count means consumed ingredient
+                                        const itemId = Math.abs(item.id);
+                                        const itemData = mcData.items[itemId];
+                                        if (itemData && itemData.name) {
+                                            ingredientNames.push(itemData.name);
+                                        }
+                                    }
+                                });
+                            } else if (recipe.ingredients) {
+                                // Direct ingredients list
+                                recipe.ingredients.forEach(ingredient => {
+                                    const itemData = mcData.items[ingredient.id];
+                                    if (itemData && itemData.name) {
+                                        ingredientNames.push(itemData.name);
+                                    }
+                                });
+                            }
+                            return {
+                                ...recipe,
+                                ingredientNames: ingredientNames
+                            };
+                        });
+                        res.json(enhancedRecipes);
+                    } else {
+                        res.json(recipes || null);
+                    }
+                } else {
+                    res.json(null);
+                }
+            } else {
+                res.status(400).json({ error: "Invalid type. Must be 'items', 'blocks', or 'recipes'" });
+            }
+        } else {
+            // Return all item/block names
+            if (type === "items") {
+                res.json(Object.keys(mcData.itemsByName));
+            } else if (type === "blocks") {
+                res.json(Object.keys(mcData.blocksByName));
+            } else if (type === "recipes") {
+                res.status(400).json({ error: "Name required for recipes" });
+            } else {
+                res.status(400).json({ error: "Invalid type. Must be 'items', 'blocks', or 'recipes'" });
+            }
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Server listening to PORT 3000
 
 const DEFAULT_PORT = 3000;

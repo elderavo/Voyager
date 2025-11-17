@@ -15,18 +15,64 @@ class RecipeFacts:
     """
     Authoritative source for Minecraft recipes and mechanics.
 
-    This class queries Mineflayer's built-in registry for accurate
+    This class queries the Mineflayer server's registry via HTTP for accurate
     game information, preventing LLM hallucination of recipes.
     """
 
-    def __init__(self, bot):
+    def __init__(self, env):
         """
         Initialize the recipe fact source.
 
         Args:
-            bot: Mineflayer bot instance with access to registry
+            env: VoyagerEnv instance with registry access
         """
-        self.bot = bot
+        self.env = env
+        self._item_cache = None
+        self._block_cache = None
+
+    def _ensure_cache(self):
+        """Ensure item and block caches are loaded."""
+        if self._item_cache is None:
+            items = self.env.get_registry("items")
+            if items:
+                self._item_cache = set(items)
+            else:
+                self._item_cache = set()
+                print("\033[33m[RecipeFacts] Warning: Could not load item cache\033[0m")
+
+        if self._block_cache is None:
+            blocks = self.env.get_registry("blocks")
+            if blocks:
+                self._block_cache = set(blocks)
+            else:
+                self._block_cache = set()
+                print("\033[33m[RecipeFacts] Warning: Could not load block cache\033[0m")
+
+    def is_valid_item(self, item_name):
+        """
+        Check if an item name is valid.
+
+        Args:
+            item_name (str): Name of the item
+
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        self._ensure_cache()
+        return item_name in self._item_cache
+
+    def is_valid_block(self, block_name):
+        """
+        Check if a block name is valid.
+
+        Args:
+            block_name (str): Name of the block
+
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        self._ensure_cache()
+        return block_name in self._block_cache
 
     def get_recipe(self, item_name):
         """
@@ -40,14 +86,7 @@ class RecipeFacts:
             Each recipe is a dict with 'ingredients', 'result', etc.
         """
         try:
-            # Get item from registry
-            item = self.bot.registry.itemsByName.get(item_name)
-            if not item:
-                print(f"\033[31m[RecipeFacts] Item not found: {item_name}\033[0m")
-                return None
-
-            # Get recipes for this item
-            recipes = self.bot.recipesFor(item.id, None, 1, None)
+            recipes = self.env.get_registry("recipes", name=item_name)
 
             if not recipes or len(recipes) == 0:
                 print(f"\033[31m[RecipeFacts] No recipe found for: {item_name}\033[0m")
@@ -71,26 +110,19 @@ class RecipeFacts:
             dict or None: Dictionary of valid tool IDs that can harvest this block,
             or None if block doesn't exist or has no tool requirements.
         """
-        try:
-            block = self.bot.registry.blocksByName.get(block_name)
-            if not block:
-                print(f"\033[31m[RecipeFacts] Block not found: {block_name}\033[0m")
-                return None
+        # Note: Full block metadata (harvestTools) requires more complex registry access
+        # For now, we'll implement basic validation only
+        # TODO: Extend /registry endpoint to include block metadata if needed
+        self._ensure_cache()
 
-            # Get harvest tools from block properties
-            harvest_tools = getattr(block, 'harvestTools', None)
-
-            if harvest_tools is None:
-                # No specific tool required (e.g., dirt, sand)
-                print(f"\033[32m[RecipeFacts] No tool required for {block_name}\033[0m")
-                return {}
-
-            print(f"\033[32m[RecipeFacts] Tools for {block_name}: {harvest_tools}\033[0m")
-            return harvest_tools
-
-        except Exception as e:
-            print(f"\033[31m[RecipeFacts] Error getting tool requirements for {block_name}: {e}\033[0m")
+        if block_name not in self._block_cache:
+            print(f"\033[31m[RecipeFacts] Block not found: {block_name}\033[0m")
             return None
+
+        # For now, assume no tool requirement
+        # This can be extended later with more detailed block data
+        print(f"\033[33m[RecipeFacts] Tool requirements not fully implemented yet\033[0m")
+        return {}
 
     def can_harvest(self, block_name, tool_name):
         """
@@ -103,35 +135,26 @@ class RecipeFacts:
         Returns:
             bool: True if the tool can harvest the block, False otherwise
         """
-        try:
-            block = self.bot.registry.blocksByName.get(block_name)
-            if not block:
-                return False
+        self._ensure_cache()
 
-            # If no harvest tools specified, any tool (or hand) works
-            harvest_tools = getattr(block, 'harvestTools', None)
-            if harvest_tools is None or len(harvest_tools) == 0:
-                return True
-
-            # Check if tool is in the list of valid harvest tools
-            tool = self.bot.registry.itemsByName.get(tool_name)
-            if not tool:
-                return False
-
-            can_harvest = tool.id in harvest_tools
-            print(f"\033[32m[RecipeFacts] Can {tool_name} harvest {block_name}? {can_harvest}\033[0m")
-            return can_harvest
-
-        except Exception as e:
-            print(f"\033[31m[RecipeFacts] Error checking harvest capability: {e}\033[0m")
+        # Basic validation - check if block and tool exist
+        if block_name not in self._block_cache:
             return False
+
+        if tool_name not in self._item_cache:
+            return False
+
+        # For now, assume all tools can harvest all blocks
+        # This can be extended with more detailed metadata later
+        print(f"\033[33m[RecipeFacts] Harvest validation simplified - assuming {tool_name} can harvest {block_name}\033[0m")
+        return True
 
     def get_ingredient_names(self, recipe):
         """
         Extract ingredient names from a recipe object.
 
         Args:
-            recipe: Recipe object from Mineflayer
+            recipe: Recipe object from Mineflayer (dict format from HTTP)
 
         Returns:
             list: List of ingredient item names
@@ -140,25 +163,13 @@ class RecipeFacts:
             if not recipe:
                 return []
 
-            ingredients = []
+            # The enhanced recipe from the /registry endpoint includes ingredientNames
+            if 'ingredientNames' in recipe:
+                return recipe['ingredientNames']
 
-            # Handle different recipe formats
-            if hasattr(recipe, 'delta'):
-                # Shaped/shapeless recipe with delta
-                for item in recipe.delta:
-                    if item.count < 0:  # Negative count means consumed ingredient
-                        item_id = abs(item.id)
-                        item_name = self.bot.registry.items[item_id].name
-                        ingredients.append(item_name)
-
-            elif hasattr(recipe, 'ingredients'):
-                # Direct ingredients list
-                for ingredient in recipe.ingredients:
-                    item_id = ingredient.id
-                    item_name = self.bot.registry.items[item_id].name
-                    ingredients.append(item_name)
-
-            return ingredients
+            # Fallback: if ingredientNames not present, log warning
+            print(f"\033[33m[RecipeFacts] Warning: Recipe missing ingredientNames field\033[0m")
+            return []
 
         except Exception as e:
             print(f"\033[31m[RecipeFacts] Error extracting ingredients: {e}\033[0m")
