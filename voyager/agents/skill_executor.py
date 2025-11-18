@@ -9,7 +9,7 @@ are missing.
 
 from voyager.agents.task_queue import Task
 
-
+# TODO: Delete? Task decomposition should be bundled into htn, no need for a skill executor, mineflayer can execute all primitives on execution stack. 
 class SkillExecutor:
     """
     Executes tasks with fact-based validation.
@@ -198,7 +198,7 @@ class SkillExecutor:
             return [Task("gather", dep_item, parent=task.parent)]
 
         elif dep_type == "locate":
-            # TODO: Implement location tasks
+            
             print(f"\033[33m[SkillExecutor] Location tasks not yet implemented\033[0m")
             return []
 
@@ -229,7 +229,6 @@ class SkillExecutor:
         print(f"\033[32m[SkillExecutor] Will execute via mineflayer: smelt {normalized}\033[0m")
         return []
 
-    # TODO: Replace with mcData lookup... is this the right place for this? where can we place this check to just do it once? 
     def _normalize_item_name(self, item_name):
         """
         Normalize a free-form item string to a canonical mineflayer/minecraft-data item name.
@@ -359,7 +358,7 @@ class SkillExecutor:
         print(f"\033[36m[SkillExecutor] Attempting to attack: {entity_name}\033[0m")
 
         # For now, assume we can attack without checking for weapon
-        # TODO: Add weapon requirement checking for specific entities
+        
         print(f"\033[32m[SkillExecutor] Will execute via mineflayer: attack {entity_name}\033[0m")
         return []
 

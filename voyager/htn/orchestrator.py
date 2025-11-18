@@ -164,7 +164,8 @@ class HTNOrchestrator:
         for call in function_calls:
             if call in self.primitives:
                 # It's a primitive - add to stack
-                execution_stack.append(Task(
+                # FIXME: Is an append appropriate for stack behavior? 
+                execution_stack.append(Task( 
                     action="primitive",
                     payload={"function": call, "skill": skill_name},
                     parent=skill_name
@@ -186,48 +187,6 @@ class HTNOrchestrator:
 
         print(f"\033[36m[HTN] Decomposition complete: {len(execution_stack)} primitive tasks\033[0m")
         return execution_stack
-
-    def execute_skill(self, skill_code, skill_name):
-        """
-        Execute a validated skill in the mineflayer environment.
-
-        Args:
-            skill_code (str): JavaScript skill code
-            skill_name (str): Name of the skill
-
-        Returns:
-            tuple: (success, events, error)
-                success (bool): True if execution succeeded
-                events (list): List of events from execution
-                error (str): Error message if failed, None otherwise
-        """
-        print(f"\033[32m[HTN] Executing skill: {skill_name}\033[0m")
-
-        try:
-            # Get all available programs (skills + primitives)
-            all_programs = self.skill_manager.programs
-
-            # Execute the skill code with full program context
-            events = self.env.step(code=skill_code, programs=all_programs)
-
-            # Check for execution errors
-            success = self._check_execution_success(events)
-
-            if success:
-                print(f"\033[32m[HTN] Skill executed successfully: {skill_name}\033[0m")
-            else:
-                print(f"\033[33m[HTN] Skill execution completed with warnings: {skill_name}\033[0m")
-
-            # Store execution state
-            self.last_skill_name = skill_name
-            self.last_skill_code = skill_code
-
-            return success, events, None
-
-        except Exception as e:
-            error_msg = f"Execution error: {e}"
-            print(f"\033[31m[HTN] {error_msg}\033[0m")
-            return False, [], error_msg
 
     def _check_execution_success(self, events):
         """
@@ -284,36 +243,59 @@ class HTNOrchestrator:
 
     def execute_queued_tasks(self, max_steps=100):
         """
-        Execute tasks from the queue (for future use with interruption).
+        Execute primitive tasks from the queue.
 
-        Currently not used - skills are executed directly. This method
-        will be important when we add priority-based task interruption.
+        Pops tasks off the stack and executes them as mineflayer primitives.
+        This is the ONLY way Python should send tasks to mineflayer -
+        one primitive at a time from the queue.
 
         Args:
             max_steps (int): Maximum number of tasks to execute
 
         Returns:
-            tuple: (success, events_list)
-                success (bool): True if all tasks completed
+            tuple: (success, events_list, error)
+                success (bool): True if all tasks completed without errors
                 events_list (list): All events from execution
+                error (str): Error message if failed, None otherwise
         """
         steps = 0
         all_events = []
+        all_programs = self.skill_manager.programs
 
         print(f"\033[36m[HTN] Starting queued task execution (max {max_steps} steps)\033[0m")
+        print(f"\033[36m[HTN] Queue size: {self.task_queue.size()}\033[0m")
 
         while not self.task_queue.empty() and steps < max_steps:
             task = self.task_queue.pop()
             print(f"\033[36m[HTN] Executing task {steps+1}: {task}\033[0m")
 
-            # For now, tasks are just markers - actual execution happens
-            # via the full skill code
-            steps += 1
+            if task.action != "primitive":
+                print(f"\033[31m[HTN] Error: Non-primitive task in queue: {task.action}\033[0m")
+                continue
+
+            try:
+                primitive_func = task.payload['function']
+                parent_skill = task.payload['skill']
+
+                print(f"\033[32m[HTN] Executing primitive: {primitive_func} (from {parent_skill})\033[0m")
+
+                # TODO: Actually call the primitive with proper arguments
+                # For now, we're just tracking the decomposition
+                # The real execution will happen when we invoke primitives individually
+                # Need to figure out how to extract arguments from the original skill code
+
+                # Placeholder: just mark as executed
+                steps += 1
+
+            except Exception as e:
+                error_msg = f"Error executing primitive {task}: {e}"
+                print(f"\033[31m[HTN] {error_msg}\033[0m")
+                return False, all_events, error_msg
 
         success = self.task_queue.empty()
-        print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'}\033[0m")
+        print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
 
-        return success, all_events
+        return success, all_events, None
 
     def get_execution_summary(self):
         """

@@ -71,6 +71,12 @@ class SkillManager:
         print(
             f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"
         )
+
+        # Get primitive decomposition from HTN orchestrator if available
+        primitives = info.get("primitives", [])
+        if primitives:
+            print(f"\033[33mSkill Manager storing {len(primitives)} primitives for {program_name}\033[0m")
+
         if program_name in self.skills:
             print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
             self.vectordb._collection.delete(ids=[program_name])
@@ -88,6 +94,7 @@ class SkillManager:
         self.skills[program_name] = {
             "code": program_code,
             "description": skill_description,
+            "primitives": primitives,  # Store primitive decomposition
         }
         assert self.vectordb._collection.count() == len(
             self.skills

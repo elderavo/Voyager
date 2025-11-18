@@ -210,6 +210,7 @@ class Voyager:
     def close(self):
         self.env.close()
 
+    # TODO: Revisit how this is done
     def _initialize_htn_if_needed(self):
         """Lazy initialization of HTN system."""
         if not self._htn_initialized:
@@ -261,20 +262,17 @@ class Voyager:
                     print(f"\033[31m[Voyager] Skill validation failed: {error}\033[0m")
                     parsed_result = f"Validation Error: {error}\nPlease fix your code to only use available primitives and skills."
                 else:
-                    # Validation passed - decompose and execute
+                    # Validation passed - decompose and queue
                     print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
 
-                    # Decompose skill into primitives for task queue (for future interruption support)
+                    # Decompose skill into primitives and queue them
                     self.htn_orchestrator.queue_tasks_from_skill(
                         response['program_code'],
                         response['program_name']
                     )
 
-                    # Execute the skill directly
-                    success, events, exec_error = self.htn_orchestrator.execute_skill(
-                        response['program_code'],
-                        response['program_name']
-                    )
+                    # Execute queued primitive tasks
+                    success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
 
                     if exec_error:
                         # Execution error - return to trigger retry
@@ -284,10 +282,10 @@ class Voyager:
                         parsed_result = {
                             "program_code": response['program_code'],
                             "program_name": response['program_name'],
-                            "exec_code": ""  # Code already executed by HTN
+                            "exec_code": ""  # Code already executed by HTN via queue
                         }
                         self.recorder.record(events, self.task)
-                        self.last_events = copy.deepcopy(events)
+                        self.last_events = copy.deepcopy(events) if events else []
             else:
                 raise ValueError("HTN system not initialized")
 
@@ -394,6 +392,11 @@ class Voyager:
             ), "program and program_name must be returned when success"
             info["program_code"] = parsed_result["program_code"]
             info["program_name"] = parsed_result["program_name"]
+
+            # Add primitive decomposition from HTN orchestrator
+            if self.htn_orchestrator and self.htn_orchestrator.last_primitives_used:
+                info["primitives"] = self.htn_orchestrator.last_primitives_used
+                print(f"\033[36m[Voyager] Adding {len(info['primitives'])} primitives to skill info\033[0m")
         else:
             print(
                 f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"

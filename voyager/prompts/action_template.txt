@@ -27,13 +27,14 @@ Your job is to write a JavaScript function to accomplish the task by:
 1. Analyzing the current state (inventory, resources, position, equipment)
 2. Writing a complete async function that handles the task
 3. Using ONLY the primitives and known skills listed above
-4. Checking inventory with bot.inventory.count() before crafting/using items
-5. Calling other skills or primitives to handle missing dependencies
+4. Calling other skills or primitives to handle missing dependencies
+5. Calling the minimum number of skills necessary. 
 6. Using bot.chat() to communicate progress and issues
 
 IMPORTANT RULES:
 - You MUST write a complete async function
 - You MUST name the function appropriately (e.g., craftStonePickaxe, mineIronOre)
+- You MAY NOT skip crafting items, even if they are currently in inventory. 
 - You MAY call mineflayer primitives (mineBlock, craftItem, smeltItem, placeItem, killMob, etc.)
 - You MAY call known skills that are listed above
 - You MAY NOT call functions that don't exist in the available lists

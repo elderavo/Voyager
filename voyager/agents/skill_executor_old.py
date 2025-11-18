@@ -198,7 +198,7 @@ class SkillExecutor:
             return [Task("gather", dep_item, parent=task.parent)]
 
         elif dep_type == "locate":
-            # TODO: Implement location tasks
+           
             print(f"\033[33m[SkillExecutor] Location tasks not yet implemented\033[0m")
             return []
 
@@ -358,7 +358,7 @@ class SkillExecutor:
         print(f"\033[36m[SkillExecutor] Attempting to attack: {entity_name}\033[0m")
 
         # For now, assume we can attack without checking for weapon
-        # TODO: Add weapon requirement checking for specific entities
+        
         print(f"\033[32m[SkillExecutor] Will execute via mineflayer: attack {entity_name}\033[0m")
         return []
 
