@@ -12,7 +12,6 @@ from .agents import CriticAgent
 from .agents import CurriculumAgent
 from .agents import SkillManager
 from .htn import HTNOrchestrator
-from .facts.recipes import RecipeFacts
 
 
 # TODO: remove event memory
@@ -157,10 +156,7 @@ class Voyager:
         self.recorder = U.EventRecorder(ckpt_dir=ckpt_dir, resume=resume)
         self.resume = resume
 
-        # Initialize HTN execution system
-        # Note: RecipeFacts needs bot instance, which is created after env.reset()
-        # We'll initialize it lazily in step() on first use
-        self.recipe_facts = None
+        # Initialize HTN execution system lazily after the env is ready
         self.htn_orchestrator = None
         self._htn_initialized = False
 
@@ -215,15 +211,11 @@ class Voyager:
         """Lazy initialization of HTN system."""
         if not self._htn_initialized:
             try:
-                # Initialize RecipeFacts with env for HTTP-based registry access
                 print(f"\033[36m[HTN] Initializing HTN execution system...\033[0m")
-                from voyager.facts.recipes import RecipeFacts
-                recipe_facts = RecipeFacts(self.env)
                 self.htn_orchestrator = HTNOrchestrator(
                     env=self.env,
-                    facts=recipe_facts,
                     skill_manager=self.skill_manager,
-                    recorder=self.recorder
+                    recorder=self.recorder,
                 )
                 self._htn_initialized = True
                 print(f"\033[36m[HTN] HTN system initialized\033[0m")
@@ -271,31 +263,24 @@ class Voyager:
                         response['program_name']
                     )
 
-                    # Check if decomposition failed due to missing skills
-                    if tasks_queued < 0:
-                        missing = self.htn_orchestrator.missing_skills
-                        error_msg = f"Missing prerequisite skills: I don't know how to make {', '.join(missing)}. Please teach me these skills first."
-                        print(f"\033[31m[Voyager] Decomposition failed: {error_msg}\033[0m")
-                        parsed_result = f"Decomposition Error: {error_msg}"
-                    else:
-                        # Execute queued primitive tasks
-                        success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
+                    # Execute queued primitive tasks
+                    success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
 
-                        if exec_error:
-                            # Execution error - return to trigger retry
-                            parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
-                        else:
-                            # Success - return result in expected format
-                            parsed_result = {
-                                "program_code": response['program_code'],
-                                "program_name": response['program_name'],
-                                "exec_code": ""  # Code already executed by HTN via queue
-                            }
-                            # Include recipe metadata if present
-                            if "recipe" in response:
-                                parsed_result["recipe"] = response["recipe"]
-                            self.recorder.record(events, self.task)
-                            self.last_events = copy.deepcopy(events) if events else []
+                    if exec_error:
+                        # Execution error - return to trigger retry
+                        parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                    else:
+                        # Success - return result in expected format
+                        parsed_result = {
+                            "program_code": response['program_code'],
+                            "program_name": response['program_name'],
+                            "exec_code": ""  # Code already executed by HTN via queue
+                        }
+                        # Include recipe metadata if present
+                        if "recipe" in response:
+                            parsed_result["recipe"] = response["recipe"]
+                        self.recorder.record(events, self.task)
+                        self.last_events = copy.deepcopy(events) if events else []
             else:
                 raise ValueError("HTN system not initialized")
 
@@ -419,7 +404,10 @@ class Voyager:
                 code=failed_code,  # Show the code that failed validation
                 task=self.task,
                 context=self.context,
-                critique=parsed_result  # The validation error becomes the critique
+                critique=parsed_result,  # The validation error becomes the critique
+                observation_override=self.last_events[-1][1]
+                if self.last_events and len(self.last_events) > 0
+                else None,
             )
 
             # Update messages for next retry - LLM will now see the error!

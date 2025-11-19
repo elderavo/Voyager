@@ -111,13 +111,23 @@ class ActionAgent:
         return system_message
 
     def render_human_message(
-        self, *, events, code="", task="", context="", critique=""
+        self,
+        *,
+        events,
+        code="",
+        task="",
+        context="",
+        critique="",
+        observation_override=None,
     ):
         chat_messages = []
         error_messages = []
         # FIXME: damage_messages is not used
         damage_messages = []
-        assert events[-1][0] == "observe", "Last event must be observe"
+        if events:
+            assert events[-1][0] == "observe", "Last event must be observe"
+
+        observation_event = None
         for i, (event_type, event) in enumerate(events):
             if event_type == "onChat":
                 chat_messages.append(event["onChat"])
@@ -126,17 +136,39 @@ class ActionAgent:
             elif event_type == "onDamage":
                 damage_messages.append(event["onDamage"])
             elif event_type == "observe":
-                biome = event["status"]["biome"]
-                time_of_day = event["status"]["timeOfDay"]
-                voxels = event["voxels"]
-                entities = event["status"]["entities"]
-                health = event["status"]["health"]
-                hunger = event["status"]["food"]
-                position = event["status"]["position"]
-                equipment = event["status"]["equipment"]
-                inventory_used = event["status"]["inventoryUsed"]
-                inventory = event["inventory"]
+                observation_event = event
                 assert i == len(events) - 1, "observe must be the last event"
+
+        if observation_event is None and observation_override is not None:
+            observation_event = observation_override
+
+        if observation_event is None:
+            observation_event = {
+                "status": {
+                    "biome": "Unknown",
+                    "timeOfDay": "Unknown",
+                    "entities": {},
+                    "health": 20.0,
+                    "food": 20.0,
+                    "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "equipment": {},
+                    "inventoryUsed": 0,
+                },
+                "voxels": [],
+                "inventory": [],
+            }
+
+        status = observation_event.get("status", {})
+        biome = status.get("biome", "Unknown")
+        time_of_day = status.get("timeOfDay", "Unknown")
+        voxels = observation_event.get("voxels") or []
+        entities = status.get("entities", {})
+        health = status.get("health", 20.0)
+        hunger = status.get("food", 20.0)
+        position = status.get("position", {"x": 0.0, "y": 0.0, "z": 0.0})
+        equipment = status.get("equipment", {})
+        inventory_used = status.get("inventoryUsed", 0)
+        inventory = observation_event.get("inventory", [])
 
         observation = ""
 
