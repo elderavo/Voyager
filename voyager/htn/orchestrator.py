@@ -262,25 +262,66 @@ class HTNOrchestrator:
 
     def _check_execution_success(self, events):
         """
-        Check if execution was successful based on events.
+        Check execution success and extract missing prerequisite info.
 
         Args:
             events (list): List of execution events
 
         Returns:
-            bool: True if no errors detected
+            tuple: (success: bool, error: dict or None)
+                error dict format: {"type": "missing_prereq", "items": ["item1", "item2"]}
+                                   {"type": "execution_error", "message": "error msg"}
+                                   {"type": "no_events", "message": "No events returned"}
         """
         if not events:
-            return False
+            return False, {"type": "no_events", "message": "No events returned"}
 
         # Check for error events
         for event_type, event_data in events:
             if event_type == "onError":
                 error_msg = event_data.get("onError", "Unknown error")
                 print(f"\033[31m[HTN] Execution error: {error_msg}\033[0m")
-                return False
 
-        return True
+                # Parse missing item errors from Mineflayer
+                missing_items = self._parse_missing_items(error_msg)
+
+                if missing_items:
+                    return False, {"type": "missing_prereq", "items": missing_items}
+                else:
+                    return False, {"type": "execution_error", "message": error_msg}
+
+        return True, None
+
+    def _parse_missing_items(self, error_msg):
+        """
+        Extract missing item names from Mineflayer error messages.
+
+        Args:
+            error_msg (str): Error message from Mineflayer
+
+        Returns:
+            list: List of missing item names, or empty list if not a missing-item error
+        """
+        import re
+
+        # Pattern: "I cannot make X because I need: item1, item2, item3"
+        pattern1 = r"I cannot make .+ because I need: (.+)"
+        match = re.search(pattern1, error_msg)
+        if match:
+            items_str = match.group(1)
+            items = [item.strip() for item in items_str.split(',')]
+            print(f"\033[33m[HTN] Parsed missing items from error: {items}\033[0m")
+            return items
+
+        # Pattern: "NoItem: item_name" or "MissingIngredient: item_name"
+        pattern2 = r"(?:NoItem|MissingIngredient):\s*(\w+)"
+        match = re.search(pattern2, error_msg)
+        if match:
+            item = match.group(1)
+            print(f"\033[33m[HTN] Parsed missing item from error: {item}\033[0m")
+            return [item]
+
+        return []
 
     def queue_tasks_from_skill(self, skill_code, skill_name):
         """
@@ -363,9 +404,17 @@ class HTNOrchestrator:
                 all_events.extend(events)
 
                 # Check for errors in execution
-                if not self._check_execution_success(events):
-                    error_msg = f"Primitive {primitive_func} failed during execution"
-                    return False, all_events, error_msg
+                success, error_info = self._check_execution_success(events)
+                if not success:
+                    if error_info and error_info.get("type") == "missing_prereq":
+                        # Return error dict for prerequisite resolution
+                        print(f"\033[33m[HTN] Missing prerequisites detected, propagating to Voyager\033[0m")
+                        return False, all_events, error_info
+                    else:
+                        # Other errors - return as string
+                        error_msg = error_info.get("message", "Unknown error") if error_info else "Execution failed"
+                        error_msg = f"Primitive {primitive_func} failed: {error_msg}"
+                        return False, all_events, error_msg
 
                 steps += 1
                 print(f"\033[32m[HTN] Primitive {primitive_func} completed successfully\033[0m")
@@ -383,6 +432,51 @@ class HTNOrchestrator:
         print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
 
         return success, all_events, None
+
+    def schedule_missing_prereqs(self, missing_items):
+        """
+        Schedule skills that produce missing prerequisite items.
+
+        For each missing item:
+        1. Check if we have a skill that produces it (via find_skill_for_output)
+        2. If YES: Decompose that skill and push primitives onto task queue
+        3. If NO: Add to unresolved list
+
+        Args:
+            missing_items (list): List of missing item names
+
+        Returns:
+            list: Unresolved items (items with no known producing skill)
+        """
+        print(f"\033[35m[HTN] Scheduling prerequisites for missing items: {missing_items}\033[0m")
+
+        unresolved = []
+
+        for item in missing_items:
+            # Check if we have a skill that produces this item
+            skill_name, skill_data = self.find_skill_for_output(item, self.skill_manager.skills)
+
+            if skill_name and skill_data:
+                print(f"\033[32m[HTN] Found skill '{skill_name}' that produces {item}\033[0m")
+
+                # Decompose skill into primitives
+                skill_code = skill_data['code']
+                subtasks = self.decompose_skill_to_primitives(skill_code, skill_name)
+
+                # Push onto queue in reverse order (LIFO stack)
+                print(f"\033[32m[HTN] Queueing {len(subtasks)} primitives for {skill_name}\033[0m")
+                for task in reversed(subtasks):
+                    self.task_queue.push(task)
+            else:
+                print(f"\033[33m[HTN] No known skill produces {item} - marking as unresolved\033[0m")
+                unresolved.append(item)
+
+        if unresolved:
+            print(f"\033[33m[HTN] Unresolved prerequisites: {unresolved}\033[0m")
+        else:
+            print(f"\033[32m[HTN] All prerequisites resolved with known skills\033[0m")
+
+        return unresolved
 
     def get_execution_summary(self):
         """

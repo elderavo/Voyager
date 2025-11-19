@@ -168,10 +168,20 @@ class Voyager:
         self.conversations = []
         self.last_events = None
 
+        # Execution tracking for skill tree building
+        self.execution_chain = []  # Track all primitives executed for current top-level task
+        self.top_level_task = None  # Track original curriculum task
+        self.top_level_skill_name = None  # Track original skill name
+
     def reset(self, task, context="", reset_env=True):
         self.action_agent_rollout_num_iter = 0
         self.task = task
         self.context = context
+
+        # Track top-level task for skill tree building
+        self.top_level_task = task
+        self.execution_chain = []
+
         if reset_env:
             self.env.reset(
                 options={
@@ -205,6 +215,104 @@ class Voyager:
 
     def close(self):
         self.env.close()
+
+    def _request_skill_for_prereq(self, item_name):
+        """
+        Request Action LLM to generate a new skill for a missing prerequisite.
+
+        This resets the conversation context to focus on producing the missing item,
+        without resetting the Mineflayer environment state.
+
+        Args:
+            item_name (str): Name of the missing item
+
+        Returns:
+            list: New messages for Action LLM
+        """
+        print(f"\033[35m[Voyager] Requesting skill generation for: {item_name}\033[0m")
+
+        # Create a focused task for producing this item
+        prereq_task = f"Obtain {item_name}"
+        prereq_context = (
+            f"Generate a skill to obtain {item_name}. "
+            f"Use only primitive functions (mineBlock, craftItem, smeltItem, etc.) or known skills. "
+            f"This is a prerequisite for a larger task."
+        )
+
+        # Reset conversation without resetting environment
+        # Use soft reset to keep bot state
+        self.task = prereq_task
+        self.context = prereq_context
+        self.action_agent_rollout_num_iter = 0
+
+        # Get current observation without env reset
+        events = self.env.step("bot.chat('Preparing to obtain prerequisite');")
+
+        # Build new messages for Action LLM
+        skills = self.skill_manager.retrieve_skills(query=prereq_context)
+        system_message = self.action_agent.render_system_message(skills=skills)
+        human_message = self.action_agent.render_human_message(
+            events=events,
+            code="",
+            task=prereq_task,
+            context=prereq_context,
+            critique=""
+        )
+
+        self.messages = [system_message, human_message]
+        print(f"\033[35m[Voyager] New skill request prepared for: {item_name}\033[0m")
+
+        return self.messages
+
+    def _is_top_level_task_complete(self):
+        """
+        Check if we've completed the original top-level task.
+
+        Returns:
+            bool: True if all prerequisites resolved and main task done
+        """
+        # If queue is empty and we have a top-level task tracked
+        return (self.top_level_task is not None and
+                self.htn_orchestrator and
+                self.htn_orchestrator.task_queue.empty())
+
+    def _save_skill_tree(self, skill_response, events):
+        """
+        Save complete skill tree after successful task completion.
+
+        This combines:
+        - Original skill code from Action LLM
+        - All primitives executed (including prerequisites)
+        - Recipe metadata for skill matching
+
+        Args:
+            skill_response (dict): Parsed LLM response with program_code, program_name
+            events (list): Execution events
+        """
+        print(f"\033[32m[Voyager] Saving complete skill tree for: {self.top_level_task}\033[0m")
+
+        info = {
+            "task": self.top_level_task,
+            "success": True,
+            "program_code": skill_response.get("program_code", ""),
+            "program_name": skill_response.get("program_name", ""),
+            "primitives": list(self.execution_chain),  # Complete execution trace
+            "dependencies_resolved": True,  # Mark as complete HTN skill
+        }
+
+        # Add recipe metadata if present
+        if "recipe" in skill_response:
+            info["recipe"] = skill_response["recipe"]
+
+        # Save to skill manager
+        self.skill_manager.add_new_skill(info)
+
+        print(f"\033[32m[Voyager] Skill tree saved with {len(self.execution_chain)} primitives\033[0m")
+
+        # Reset execution tracking
+        self.execution_chain = []
+        self.top_level_task = None
+        self.top_level_skill_name = None
 
     # TODO: Revisit how this is done
     def _initialize_htn_if_needed(self):
@@ -266,10 +374,37 @@ class Voyager:
                     # Execute queued primitive tasks
                     success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
 
-                    if exec_error:
-                        # Execution error - return to trigger retry
+                    # Handle missing prerequisites
+                    if isinstance(exec_error, dict) and exec_error.get("type") == "missing_prereq":
+                        missing_items = exec_error.get("items", [])
+                        print(f"\033[35m[Voyager] Missing prerequisites detected: {missing_items}\033[0m")
+
+                        # Try to schedule known skills for missing items
+                        unresolved = self.htn_orchestrator.schedule_missing_prereqs(missing_items)
+
+                        if unresolved:
+                            # We don't have skills for these items - request Action LLM to generate new skill
+                            print(f"\033[35m[Voyager] Requesting new skill for unresolved prerequisite: {unresolved[0]}\033[0m")
+
+                            # Generate new skill for first unresolved item
+                            new_task_msg = self._request_skill_for_prereq(unresolved[0])
+
+                            # Return error to trigger new skill generation in next step
+                            parsed_result = f"Missing prerequisite: {unresolved[0]}. Generating skill to obtain it..."
+                        else:
+                            # All prerequisites resolved with known skills - continue execution
+                            print(f"\033[32m[Voyager] All prerequisites scheduled - will continue in next step\033[0m")
+                            # Return error to continue execution loop
+                            parsed_result = f"Prerequisites scheduled. Continue execution in next step."
+                    elif exec_error:
+                        # Execution error (not missing prereq) - return to trigger retry
                         parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
                     else:
+                        # Success - track primitives executed
+                        if hasattr(self.htn_orchestrator, 'last_primitives_used'):
+                            self.execution_chain.extend(self.htn_orchestrator.last_primitives_used)
+                            print(f"\033[36m[Voyager] Execution chain now has {len(self.execution_chain)} primitives\033[0m")
+
                         # Success - return result in expected format
                         parsed_result = {
                             "program_code": response['program_code'],
@@ -281,6 +416,11 @@ class Voyager:
                             parsed_result["recipe"] = response["recipe"]
                         self.recorder.record(events, self.task)
                         self.last_events = copy.deepcopy(events) if events else []
+
+                        # Check if top-level task is complete and save skill tree
+                        if self._is_top_level_task_complete():
+                            print(f"\033[32m[Voyager] Top-level task complete! Saving skill tree...\033[0m")
+                            self._save_skill_tree(response, events)
             else:
                 raise ValueError("HTN system not initialized")
 

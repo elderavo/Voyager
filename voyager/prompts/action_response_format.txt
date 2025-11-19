@@ -1,55 +1,66 @@
-You MUST output a JSON dictionary with the following fields:
+You MUST output a JSON dictionary with the following structure:
 
-```json
 {
-  "program_code": "<complete JavaScript async function>",
-  "program_name": "<function_name_in_camelCase>",
-  "reasoning": "<brief explanation of your approach>",
+  "program_code": "<async function solving ONLY the top-level task>",
+  "program_name": "<functionNameInCamelCase>",
+  "reasoning": "<brief explanation>",
   "recipe": {
-    "inputs": ["<list>", "<of>", "<ingredient>", "<item>", "<names>"],
-    "output": "<item_name_this_skill_produces>",
-    "craftIn": "<crafting_table|furnace|2x2_grid|null>"
+    "inputs": ["<list of items required>"],
+    "output": "<item produced by this skill>",
+    "craftIn": "<crafting_table | furnace | 2x2_grid | null>"
   }
 }
-```
 
-Rules:
-- "program_code" must be a complete, valid JavaScript async function
-- The function must be named according to "program_name"
-- The function must take a single parameter: bot
-- You must use ONLY known skills from the available list, only use primitives if necessary
-- Primitive calls must include their required arguments (e.g., mineBlock(bot, 'stone', 3))
-- NEVER include inventory checks in your code - the system handles prerequisites automatically
-- Use bot.chat() to communicate what you're doing
-- "recipe" metadata MUST be included:
-  - "inputs": list of item names needed to create the output (empty array [] if gathering from world)
-  - "output": the item name this skill produces
-  - "craftIn": where to craft ("crafting_table", "furnace", "2x2_grid", or null for gathering skills)
+===============================
+CONSTRAINTS FOR program_code
+===============================
 
-Example for crafting skill:
-```json
+- You MUST produce exactly ONE async function.
+- The function MUST take (bot) as its only parameter.
+- The function MUST contain DIRECT primitive calls, for example:
+
+    await mineBlock(bot, 'oak_log', 2);
+    await craftItem(bot, 'oak_planks', 4);
+
+- You MUST NOT create ANY new helper functions for gathering or mining.
+- You MUST NOT define new skills whose only purpose is gathering.
+- You MUST NOT include inventory checks — the system resolves these.
+
+===============================
+EXAMPLES (STRICTLY FOLLOW THESE)
+===============================
+
+Example for crafting with direct primitives:
+
 {
-  "program_code": "async function craftWoodenPickaxe(bot) {\n  bot.chat('Crafting wooden pickaxe');\n  await craftItem(bot, 'stick', 2);\n  await craftItem(bot, 'wooden_pickaxe', 1);\n  bot.chat('Wooden pickaxe ready!');\n}",
+  "program_code": "async function craftWoodenPickaxe(bot) {\n  bot.chat('Crafting wooden pickaxe');\n  await mineBlock(bot, 'oak_log', 1);\n  await craftItem(bot, 'oak_planks', 4);\n  await craftItem(bot, 'stick', 2);\n  await craftItem(bot, 'wooden_pickaxe', 1);\n  bot.chat('Pickaxe crafted!');\n}",
   "program_name": "craftWoodenPickaxe",
-  "reasoning": "Craft sticks first, then use them with planks to craft the pickaxe",
+  "reasoning": "Use primitives directly. No helper skills.",
   "recipe": {
-    "inputs": ["stick", "planks"],
+    "inputs": ["oak_log", "oak_planks", "stick"],
     "output": "wooden_pickaxe",
     "craftIn": "crafting_table"
   }
 }
-```
 
-Example for gathering skill:
-```json
+You may return immediate primitive execution using ONLY the field:
+
+    "exec_code": "await mineBlock(bot, 'oak_log', 1);"
+
+In this case:
+- program_code MUST be empty string ""
+- program_name MUST be empty string ""
+- The system will run exec_code immediately and will NOT store a new skill.
+
+Example for gathering inside main function (NOT a standalone skill):
+
 {
-  "program_code": "async function mineWoodLog(bot) {\n  bot.chat('Mining wood log');\n  await mineBlock(bot, 'birch_log', 1);\n  bot.chat('Wood log obtained!');\n}",
-  "program_name": "mineWoodLog",
-  "reasoning": "Mine a birch log from nearby tree",
+  "program_code": "async function gatherStoneForFurnace(bot) {\n  bot.chat('Mining stone');\n  await mineBlock(bot, 'stone', 8);\n  bot.chat('Stone ready');\n}",
+  "program_name": "gatherStoneForFurnace",
+  "reasoning": "Direct primitive use.",
   "recipe": {
-    "inputs": [],
-    "output": "birch_log",
+    "inputs": ["stone"],
+    "output": "stone",
     "craftIn": null
   }
 }
-```

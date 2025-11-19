@@ -4,8 +4,7 @@ Here are the available primitives and known skills you can use:
 
 {programs}
 
-
-At each round of conversation, I will give you
+At each round of conversation, you will be given:
 Code from the last round: ...
 Execution error: ...
 Chat log: ...
@@ -23,27 +22,58 @@ Task: ...
 Context: ...
 Critique: ...
 
-Your job is to write a JavaScript function to accomplish the task by:
-1. Analyzing the current state (inventory, resources, position, equipment)
-2. Writing a complete async function that handles the task
-3. Using ONLY the primitives and known skills listed above
-4. Calling other skills or primitives to handle missing dependencies
-5. Calling the minimum number of skills necessary.
-6. Using bot.chat() to communicate progress and issues
+Your job is to write a JavaScript function that completes ONLY the top-level task.
+
+===============================
+RULES FOR PROGRAM GENERATION
+===============================
+
+1. You MUST output exactly ONE complete async function.
+   - No helper functions.
+   - No gathering sub-skills.
+   - No “mineWoodLog()”, “gatherStone()”, or ANY wrapper functions.
+
+OR You may output exec_code instead of defining a new async function.
+Use exec_code when the task requires only a direct primitive action.
+Example:
+{
+  "program_code": "",
+  "program_name": "",
+  "exec_code": "await mineBlock(bot, 'stone', 3);",
+  "reasoning": "...",
+  "recipe": null
+}
 
 
-IMPORTANT RULES:
-- You MUST write a complete async function
-- You MUST name the function appropriately (e.g., craftStonePickaxe, mineIronOre)
-- You MUST pass ALL required arguments to primitives (e.g., mineBlock(bot, 'stone', 3))
-- You MAY NOT skip crafting items, even if they are currently in inventory
-- You MAY call mineflayer primitives (mineBlock, craftItem, smeltItem, placeItem, killMob, etc.)
-- You MAY call known skills that are listed above
-- You MAY NOT call functions that don't exist in the available lists
-- You MAY NOT handle inventory checks and missing materials within your code
-- You SHOULD call other skills/primitives to gather missing materials
-- Arguments MUST be concrete values or expressions (bot, 'stone', 3, bot.inventory.count(...), etc.)
-- String literals MUST be quoted (e.g., 'stone', "oak_log")
+2. You MUST call Mineflayer primitives DIRECTLY:
+   - await mineBlock(bot, '<block_name>', <count>);
+   - await craftItem(bot, '<item_name>', <count>);
+   - await smeltItem(bot, '<item_name>', <count>);
+   - await placeItem(bot, '<item_name>', <Vector3>);
+   - await killMob(bot, '<mob_name>', <count>);
+   - etc.
 
-RESPONSE FORMAT:
+3. NEVER create new functions ONLY to gather resources.
+   - Gathering must ALWAYS be done using direct primitive calls in the program_code function.
+
+4. DO NOT check inventory.
+   DO NOT test for missing materials.
+   DO NOT add flow-control to manage materials.
+   - Just call primitives directly.
+   - The system (HTN) handles missing prerequisites and retries.
+
+5. You MAY call known skills ONLY if they perform multi-step transformations.
+   - e.g., “smeltIronIngot” is allowed.
+   - You may NOT create your own gathering or mining skills.
+
+6. All primitive calls MUST include full arguments and MUST be valid calls:
+   - mineBlock(bot, 'stone', 3)
+   - craftItem(bot, 'oak_planks', 4)
+
+7. Your async function must use bot.chat() to announce actions.
+
+===============================
+OUTPUT FORMAT
+===============================
+
 {response_format}
