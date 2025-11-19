@@ -365,6 +365,9 @@ class Voyager:
                     # Validation passed - decompose and queue
                     print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
 
+                    if self.top_level_skill_name is None:
+                        self.top_level_skill_name = response['program_name']
+
                     # Decompose skill into primitives and queue them
                     tasks_queued = self.htn_orchestrator.queue_tasks_from_skill(
                         response['program_code'],
@@ -373,6 +376,10 @@ class Voyager:
 
                     # Execute queued primitive tasks
                     success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
+
+                    if hasattr(self.htn_orchestrator, 'last_primitives_used') and self.htn_orchestrator.last_primitives_used:
+                        self.execution_chain.extend(self.htn_orchestrator.last_primitives_used)
+                        print(f"\033[36m[Voyager] Execution chain now has {len(self.execution_chain)} primitives\033[0m")
 
                     # Handle missing prerequisites
                     if isinstance(exec_error, dict) and exec_error.get("type") == "missing_prereq":
@@ -400,11 +407,6 @@ class Voyager:
                         # Execution error (not missing prereq) - return to trigger retry
                         parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
                     else:
-                        # Success - track primitives executed
-                        if hasattr(self.htn_orchestrator, 'last_primitives_used'):
-                            self.execution_chain.extend(self.htn_orchestrator.last_primitives_used)
-                            print(f"\033[36m[Voyager] Execution chain now has {len(self.execution_chain)} primitives\033[0m")
-
                         # Success - return result in expected format
                         parsed_result = {
                             "program_code": response['program_code'],
