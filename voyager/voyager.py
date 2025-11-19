@@ -348,81 +348,115 @@ class Voyager:
         parsed_result = None
         try:
             if self.htn_orchestrator:
-                # Parse LLM response (expecting program_code and program_name)
+                # Parse LLM response (expecting program_code and program_name, or exec_code)
                 response = self.htn_orchestrator.parse_llm_response(ai_message.content)
 
-                # Validate that skill code only uses known functions
-                is_valid, error, function_calls = self.htn_orchestrator.validate_skill_code(
-                    response['program_code'],
-                    response['program_name']
-                )
+                # Check if this is immediate execution mode (exec_code instead of skill)
+                if response.get('exec_code') and not response.get('program_code'):
+                    # Immediate primitive execution - run directly without skill creation
+                    print(f"\033[33m[Voyager] Executing immediate primitive action\033[0m")
+                    exec_code = response['exec_code']
 
-                if not is_valid:
-                    # Validation failed - return error to trigger LLM retry
-                    print(f"\033[31m[Voyager] Skill validation failed: {error}\033[0m")
-                    parsed_result = f"Validation Error: {error}\nPlease fix your code to only use available primitives and skills."
-                else:
-                    # Validation passed - decompose and queue
-                    print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
+                    # Execute the primitive directly
+                    events = self.env.step(code=exec_code, programs=self.skill_manager.programs)
 
-                    if self.top_level_skill_name is None:
-                        self.top_level_skill_name = response['program_name']
+                    # Check for errors
+                    success = True
+                    exec_error = None
+                    for event_type, event_data in events:
+                        if event_type == "onError":
+                            success = False
+                            exec_error = event_data.get("onError", "Unknown error")
+                            break
 
-                    # Decompose skill into primitives and queue them
-                    tasks_queued = self.htn_orchestrator.queue_tasks_from_skill(
+                    if exec_error:
+                        parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                    else:
+                        # Success - return result
+                        parsed_result = {
+                            "program_code": "",
+                            "program_name": "",
+                            "exec_code": exec_code
+                        }
+                        self.recorder.record(events, self.task)
+                        self.last_events = copy.deepcopy(events) if events else []
+                elif response.get('program_code'):
+                    # Skill creation mode - validate and decompose
+                    # Validate that skill code only uses known functions
+                    is_valid, error, function_calls = self.htn_orchestrator.validate_skill_code(
                         response['program_code'],
                         response['program_name']
                     )
 
-                    # Execute queued primitive tasks
-                    success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
-
-                    if hasattr(self.htn_orchestrator, 'last_primitives_used') and self.htn_orchestrator.last_primitives_used:
-                        self.execution_chain.extend(self.htn_orchestrator.last_primitives_used)
-                        print(f"\033[36m[Voyager] Execution chain now has {len(self.execution_chain)} primitives\033[0m")
-
-                    # Handle missing prerequisites
-                    if isinstance(exec_error, dict) and exec_error.get("type") == "missing_prereq":
-                        missing_items = exec_error.get("items", [])
-                        print(f"\033[35m[Voyager] Missing prerequisites detected: {missing_items}\033[0m")
-
-                        # Try to schedule known skills for missing items
-                        unresolved = self.htn_orchestrator.schedule_missing_prereqs(missing_items)
-
-                        if unresolved:
-                            # We don't have skills for these items - request Action LLM to generate new skill
-                            print(f"\033[35m[Voyager] Requesting new skill for unresolved prerequisite: {unresolved[0]}\033[0m")
-
-                            # Generate new skill for first unresolved item
-                            new_task_msg = self._request_skill_for_prereq(unresolved[0])
-
-                            # Return error to trigger new skill generation in next step
-                            parsed_result = f"Missing prerequisite: {unresolved[0]}. Generating skill to obtain it..."
-                        else:
-                            # All prerequisites resolved with known skills - continue execution
-                            print(f"\033[32m[Voyager] All prerequisites scheduled - will continue in next step\033[0m")
-                            # Return error to continue execution loop
-                            parsed_result = f"Prerequisites scheduled. Continue execution in next step."
-                    elif exec_error:
-                        # Execution error (not missing prereq) - return to trigger retry
-                        parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                    if not is_valid:
+                        # Validation failed - return error to trigger LLM retry
+                        print(f"\033[31m[Voyager] Skill validation failed: {error}\033[0m")
+                        parsed_result = f"Validation Error: {error}\nPlease fix your code to only use available primitives and skills."
                     else:
-                        # Success - return result in expected format
-                        parsed_result = {
-                            "program_code": response['program_code'],
-                            "program_name": response['program_name'],
-                            "exec_code": ""  # Code already executed by HTN via queue
-                        }
-                        # Include recipe metadata if present
-                        if "recipe" in response:
-                            parsed_result["recipe"] = response["recipe"]
-                        self.recorder.record(events, self.task)
-                        self.last_events = copy.deepcopy(events) if events else []
+                        # Validation passed - decompose and queue
+                        print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
 
-                        # Check if top-level task is complete and save skill tree
-                        if self._is_top_level_task_complete():
-                            print(f"\033[32m[Voyager] Top-level task complete! Saving skill tree...\033[0m")
-                            self._save_skill_tree(response, events)
+                        if self.top_level_skill_name is None:
+                            self.top_level_skill_name = response['program_name']
+
+                        # Decompose skill into primitives and queue them
+                        tasks_queued = self.htn_orchestrator.queue_tasks_from_skill(
+                            response['program_code'],
+                            response['program_name']
+                        )
+
+                        # Execute queued primitive tasks
+                        success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
+
+                        if hasattr(self.htn_orchestrator, 'last_primitives_used') and self.htn_orchestrator.last_primitives_used:
+                            self.execution_chain.extend(self.htn_orchestrator.last_primitives_used)
+                            print(f"\033[36m[Voyager] Execution chain now has {len(self.execution_chain)} primitives\033[0m")
+
+                        # Handle missing prerequisites
+                        if isinstance(exec_error, dict) and exec_error.get("type") == "missing_prereq":
+                            missing_items = exec_error.get("items", [])
+                            print(f"\033[35m[Voyager] Missing prerequisites detected: {missing_items}\033[0m")
+
+                            # Try to schedule known skills for missing items
+                            unresolved = self.htn_orchestrator.schedule_missing_prereqs(missing_items)
+
+                            if unresolved:
+                                # We don't have skills for these items - request Action LLM to generate new skill
+                                print(f"\033[35m[Voyager] Requesting new skill for unresolved prerequisite: {unresolved[0]}\033[0m")
+
+                                # Generate new skill for first unresolved item
+                                new_task_msg = self._request_skill_for_prereq(unresolved[0])
+
+                                # Return error to trigger new skill generation in next step
+                                parsed_result = f"Missing prerequisite: {unresolved[0]}. Generating skill to obtain it..."
+                            else:
+                                # All prerequisites resolved with known skills - continue execution
+                                print(f"\033[32m[Voyager] All prerequisites scheduled - will continue in next step\033[0m")
+                                # Return error to continue execution loop
+                                parsed_result = f"Prerequisites scheduled. Continue execution in next step."
+                        elif exec_error:
+                            # Execution error (not missing prereq) - return to trigger retry
+                            parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                        else:
+                            # Success - return result in expected format
+                            parsed_result = {
+                                "program_code": response['program_code'],
+                                "program_name": response['program_name'],
+                                "exec_code": ""  # Code already executed by HTN via queue
+                            }
+                            # Include recipe metadata if present
+                            if "recipe" in response:
+                                parsed_result["recipe"] = response["recipe"]
+                            self.recorder.record(events, self.task)
+                            self.last_events = copy.deepcopy(events) if events else []
+
+                            # Check if top-level task is complete and save skill tree
+                            if self._is_top_level_task_complete():
+                                print(f"\033[32m[Voyager] Top-level task complete! Saving skill tree...\033[0m")
+                                self._save_skill_tree(response, events)
+                else:
+                    # Neither program_code nor exec_code provided
+                    raise ValueError("Response must contain either 'program_code' or 'exec_code'")
             else:
                 raise ValueError("HTN system not initialized")
 

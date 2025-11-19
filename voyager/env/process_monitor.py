@@ -54,6 +54,8 @@ class SubprocessMonitor:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
+            encoding='utf-8',
+            errors='replace',  # Replace invalid characters instead of crashing
             cwd=self.cwd,
         )
         print(f"Subprocess {self.name} started with PID {self.process.pid}.")
