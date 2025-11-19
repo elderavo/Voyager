@@ -22,18 +22,16 @@ class HTNOrchestrator:
     them into primitive operations for stack-based execution.
     """
 
-    def __init__(self, env, facts, skill_manager, recorder=None):
+    def __init__(self, env, skill_manager, recorder=None):
         """
         Initialize the HTN orchestrator.
 
         Args:
             env: VoyagerEnv instance for executing actions
-            facts: RecipeFacts instance for game mechanics validation
             skill_manager: SkillManager instance for skill library access
             recorder: Optional event recorder
         """
         self.env = env
-        self.facts = facts
         self.skill_manager = skill_manager
         self.recorder = recorder
         self.analyzer = JavaScriptAnalyzer()
@@ -43,7 +41,6 @@ class HTNOrchestrator:
         self.last_skill_name = None
         self.last_skill_code = None
         self.last_primitives_used = []
-        self.missing_skills = []  # Items we tried to craft but don't have skills for
 
         # Primitive function names (mineflayer built-ins)
         # NOTE: craftItem is both a primitive AND decomposable
@@ -189,7 +186,6 @@ class HTNOrchestrator:
             return []
 
         execution_stack = []
-        missing_skills = []  # Track items we don't know how to make
 
         for call_info in function_calls:
             func_name = call_info['function']
@@ -228,11 +224,11 @@ class HTNOrchestrator:
                     # Add prerequisite tasks (they'll execute before the craft)
                     execution_stack.extend(sub_tasks)
                 else:
-                    # No skill found that produces this item
-                    # This means we don't know how to get this item yet
-                    print(f"\033[31m[HTN]   ERROR: No skill found that produces '{item_name}'\033[0m")
-                    print(f"\033[31m[HTN]   The curriculum should request this item as a task first\033[0m")
-                    missing_skills.append(item_name)
+                    # No stored skill produces this item yet. Treat craftItem as directly executable
+                    # so Mineflayer can leverage its own recipe knowledge (bot.findRecipe / bot.recipesFor)
+                    print(
+                        f"\033[33m[HTN]   No stored skill for {item_name}; executing craftItem directly\033[0m"
+                    )
 
             # TRUE PRIMITIVES (non-craft) - add to stack directly
             elif func_name in self.primitives:
@@ -260,17 +256,6 @@ class HTNOrchestrator:
             else:
                 # Unknown function (should have been caught in validation)
                 print(f"\033[31m[HTN]   Warning: Unknown function {func_name} (skipping)\033[0m")
-
-        # Check if we found any missing skills
-        if missing_skills:
-            print(f"\033[31m[HTN] Decomposition FAILED: Missing skills for {missing_skills}\033[0m")
-            # Store for voyager.py to access
-            self.missing_skills = missing_skills
-            # Return empty list to signal failure - voyager.py will handle the error
-            return []
-        else:
-            # Clear missing skills on success
-            self.missing_skills = []
 
         print(f"\033[36m[HTN] Decomposition complete: {len(execution_stack)} primitive tasks\033[0m")
         return execution_stack
@@ -314,11 +299,6 @@ class HTNOrchestrator:
         """
         # Decompose skill into primitives
         primitive_tasks = self.decompose_skill_to_primitives(skill_code, skill_name)
-
-        # Check if decomposition failed due to missing skills
-        if not primitive_tasks and self.missing_skills:
-            print(f"\033[31m[HTN] Cannot queue tasks - missing skills for: {self.missing_skills}\033[0m")
-            return -1  # Signal failure
 
         # Queue tasks (in reverse order since stack is LIFO)
         initial_size = self.task_queue.size()
