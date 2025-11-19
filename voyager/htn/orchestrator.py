@@ -349,8 +349,8 @@ class HTNOrchestrator:
         tasks_added = self.task_queue.size() - initial_size
         print(f"\033[36m[HTN] Queued {tasks_added} primitive tasks for {skill_name}\033[0m")
 
-        # Store for reference
-        self.last_primitives_used = [t.payload['function'] for t in primitive_tasks]
+        # Reset last executed primitive record for new queue
+        self.last_primitives_used = []
 
         return tasks_added
 
@@ -373,6 +373,7 @@ class HTNOrchestrator:
         """
         steps = 0
         all_events = []
+        executed_primitives = []
         all_programs = self.skill_manager.programs
 
         print(f"\033[36m[HTN] Starting queued task execution (max {max_steps} steps)\033[0m")
@@ -406,15 +407,23 @@ class HTNOrchestrator:
                 # Check for errors in execution
                 success, error_info = self._check_execution_success(events)
                 if not success:
+                    # Requeue the failing primitive so it can be retried after prerequisites are met
+                    self.task_queue.push(task)
+
                     if error_info and error_info.get("type") == "missing_prereq":
                         # Return error dict for prerequisite resolution
                         print(f"\033[33m[HTN] Missing prerequisites detected, propagating to Voyager\033[0m")
+                        self.last_primitives_used = executed_primitives
                         return False, all_events, error_info
                     else:
                         # Other errors - return as string
                         error_msg = error_info.get("message", "Unknown error") if error_info else "Execution failed"
                         error_msg = f"Primitive {primitive_func} failed: {error_msg}"
+                        self.last_primitives_used = executed_primitives
                         return False, all_events, error_msg
+
+                # Track successful primitive execution
+                executed_primitives.append(primitive_func)
 
                 steps += 1
                 print(f"\033[32m[HTN] Primitive {primitive_func} completed successfully\033[0m")
@@ -422,14 +431,18 @@ class HTNOrchestrator:
             except KeyError as e:
                 error_msg = f"Missing expected field in task payload: {e}"
                 print(f"\033[31m[HTN] {error_msg}\033[0m")
+                self.last_primitives_used = executed_primitives
                 return False, all_events, error_msg
             except Exception as e:
                 error_msg = f"Error executing primitive {task}: {e}"
                 print(f"\033[31m[HTN] {error_msg}\033[0m")
+                self.last_primitives_used = executed_primitives
                 return False, all_events, error_msg
 
         success = self.task_queue.empty()
         print(f"\033[36m[HTN] Queue execution {'completed' if success else 'incomplete'} after {steps} steps\033[0m")
+
+        self.last_primitives_used = executed_primitives
 
         return success, all_events, None
 
