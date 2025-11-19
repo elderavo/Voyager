@@ -43,11 +43,14 @@ class HTNOrchestrator:
         self.last_skill_name = None
         self.last_skill_code = None
         self.last_primitives_used = []
+        self.missing_skills = []  # Items we tried to craft but don't have skills for
 
         # Primitive function names (mineflayer built-ins)
+        # NOTE: craftItem is both a primitive AND decomposable
+        # It executes in JS, but also triggers prerequisite decomposition in Python
         self.primitives = {
-            'mineBlock', 'craftItem', 'smeltItem', 'placeItem',
-            'killMob', 'exploreUntil', 'useChest'
+            'mineBlock', 'smeltItem', 'placeItem',
+            'killMob', 'exploreUntil', 'useChest', 'craftItem'
         }
 
     def parse_llm_response(self, ai_message_content):
@@ -117,7 +120,9 @@ class HTNOrchestrator:
         print(f"\033[36m[HTN] Validating skill: {skill_name}\033[0m")
 
         # Build set of available functions
+        # Include primitives (includes craftItem)
         available_functions = set(self.primitives)
+        # Include all known skills
         available_functions.update(self.skill_manager.skills.keys())
 
         # Validate function calls
@@ -132,13 +137,36 @@ class HTNOrchestrator:
         print(f"\033[32m[HTN] Validation passed. Functions used: {function_calls}\033[0m")
         return True, None, function_calls
 
+    def find_skill_for_output(self, item_name, known_skills):
+        """
+        Find a skill that produces the given item.
+
+        Args:
+            item_name (str): Item to find (e.g., "stick", "wooden_pickaxe")
+            known_skills (dict): Known skills with recipe metadata
+
+        Returns:
+            tuple: (skill_name, skill_data) or (None, None) if not found
+        """
+        for skill_name, skill_data in known_skills.items():
+            if 'recipe' in skill_data and skill_data['recipe']:
+                if skill_data['recipe'].get('output') == item_name:
+                    return skill_name, skill_data
+        return None, None
+
     def decompose_skill_to_primitives(self, skill_code, skill_name, known_skills=None):
         """
-        Recursively decompose skill into primitive operations.
+        Recursively decompose skill into primitive operations WITH arguments.
 
         This builds a stack of primitive operations that must be executed
         to accomplish the skill. Skills are decomposed into their constituent
-        primitives by recursively analyzing function calls.
+        primitives by recursively analyzing function calls and extracting arguments.
+
+        STACK-BASED EXECUTION:
+        - Tasks are pushed onto a stack (LIFO)
+        - For craftItem calls: push the craft FIRST, then decompose prerequisites
+        - Prerequisites execute first (on top of stack)
+        - Craft executes last (at bottom of stack) when ingredients are ready
 
         Args:
             skill_code (str): JavaScript skill code
@@ -154,36 +182,95 @@ class HTNOrchestrator:
         print(f"\033[36m[HTN] Decomposing skill: {skill_name}\033[0m")
 
         try:
-            function_calls = self.analyzer.extract_function_calls(skill_code)
+            # Extract function calls WITH arguments
+            function_calls = self.analyzer.extract_function_calls_with_args(skill_code)
         except ValueError as e:
             print(f"\033[31m[HTN] Failed to extract function calls: {e}\033[0m")
             return []
 
         execution_stack = []
+        missing_skills = []  # Track items we don't know how to make
 
-        for call in function_calls:
-            if call in self.primitives:
-                # It's a primitive - add to stack
-                # FIXME: Is an append appropriate for stack behavior? 
-                execution_stack.append(Task( 
+        for call_info in function_calls:
+            func_name = call_info['function']
+            func_args = call_info['args']
+            line_num = call_info['line']
+
+            # CRAFT ITEM - special handling: both primitive AND decomposable
+            if func_name == 'craftItem':
+                # Extract item name from arguments
+                item_name = func_args[1].strip("'\"") if len(func_args) > 1 else "unknown"
+
+                # STEP 1: Push the craft action onto stack first
+                craft_task = Task(
                     action="primitive",
-                    payload={"function": call, "skill": skill_name},
+                    payload={
+                        "function": "craftItem",
+                        "args": func_args,
+                        "skill": skill_name,
+                        "line": line_num
+                    },
+                    parent=skill_name
+                )
+                execution_stack.append(craft_task)
+                print(f"\033[33m[HTN]   Craft: craftItem({', '.join(func_args)})\033[0m")
+
+                # STEP 2: Look for a skill that produces this item
+                producing_skill_name, producing_skill_data = self.find_skill_for_output(item_name, known_skills)
+
+                if producing_skill_name:
+                    # Found a skill that produces this item - decompose it to get ingredients
+                    print(f"\033[33m[HTN]   Decomposing skill: {producing_skill_name} (produces {item_name})\033[0m")
+                    sub_skill_code = producing_skill_data['code']
+                    sub_tasks = self.decompose_skill_to_primitives(
+                        sub_skill_code, producing_skill_name, known_skills
+                    )
+                    # Add prerequisite tasks (they'll execute before the craft)
+                    execution_stack.extend(sub_tasks)
+                else:
+                    # No skill found that produces this item
+                    # This means we don't know how to get this item yet
+                    print(f"\033[31m[HTN]   ERROR: No skill found that produces '{item_name}'\033[0m")
+                    print(f"\033[31m[HTN]   The curriculum should request this item as a task first\033[0m")
+                    missing_skills.append(item_name)
+
+            # TRUE PRIMITIVES (non-craft) - add to stack directly
+            elif func_name in self.primitives:
+                execution_stack.append(Task(
+                    action="primitive",
+                    payload={
+                        "function": func_name,
+                        "args": func_args,
+                        "skill": skill_name,
+                        "line": line_num
+                    },
                     parent=skill_name
                 ))
-                print(f"\033[32m[HTN]   Primitive: {call}\033[0m")
+                print(f"\033[32m[HTN]   Primitive: {func_name}({', '.join(func_args)})\033[0m")
 
-            elif call in known_skills:
-                # It's a known skill - recursively decompose
-                print(f"\033[33m[HTN]   Decomposing sub-skill: {call}\033[0m")
-                sub_skill_code = known_skills[call]['code']
+            # OTHER SKILL CALL - recursively decompose
+            elif func_name in known_skills:
+                print(f"\033[33m[HTN]   Decomposing sub-skill: {func_name}\033[0m")
+                sub_skill_code = known_skills[func_name]['code']
                 sub_tasks = self.decompose_skill_to_primitives(
-                    sub_skill_code, call, known_skills
+                    sub_skill_code, func_name, known_skills
                 )
                 execution_stack.extend(sub_tasks)
 
             else:
                 # Unknown function (should have been caught in validation)
-                print(f"\033[31m[HTN]   Warning: Unknown function {call} (skipping)\033[0m")
+                print(f"\033[31m[HTN]   Warning: Unknown function {func_name} (skipping)\033[0m")
+
+        # Check if we found any missing skills
+        if missing_skills:
+            print(f"\033[31m[HTN] Decomposition FAILED: Missing skills for {missing_skills}\033[0m")
+            # Store for voyager.py to access
+            self.missing_skills = missing_skills
+            # Return empty list to signal failure - voyager.py will handle the error
+            return []
+        else:
+            # Clear missing skills on success
+            self.missing_skills = []
 
         print(f"\033[36m[HTN] Decomposition complete: {len(execution_stack)} primitive tasks\033[0m")
         return execution_stack
@@ -227,6 +314,11 @@ class HTNOrchestrator:
         """
         # Decompose skill into primitives
         primitive_tasks = self.decompose_skill_to_primitives(skill_code, skill_name)
+
+        # Check if decomposition failed due to missing skills
+        if not primitive_tasks and self.missing_skills:
+            print(f"\033[31m[HTN] Cannot queue tasks - missing skills for: {self.missing_skills}\033[0m")
+            return -1  # Signal failure
 
         # Queue tasks (in reverse order since stack is LIFO)
         initial_size = self.task_queue.size()
@@ -275,18 +367,33 @@ class HTNOrchestrator:
 
             try:
                 primitive_func = task.payload['function']
+                primitive_args = task.payload['args']
                 parent_skill = task.payload['skill']
+                line_num = task.payload['line']
 
-                print(f"\033[32m[HTN] Executing primitive: {primitive_func} (from {parent_skill})\033[0m")
+                print(f"\033[32m[HTN] Executing primitive: {primitive_func}({', '.join(primitive_args)}) (from {parent_skill}:{line_num})\033[0m")
 
-                # TODO: Actually call the primitive with proper arguments
-                # For now, we're just tracking the decomposition
-                # The real execution will happen when we invoke primitives individually
-                # Need to figure out how to extract arguments from the original skill code
+                # Generate JavaScript code to execute the primitive with arguments
+                args_str = ', '.join(primitive_args)
+                code = f"await {primitive_func}({args_str});"
 
-                # Placeholder: just mark as executed
+                # Execute in mineflayer environment
+                print(f"\033[36m[HTN] Executing code: {code}\033[0m")
+                events = self.env.step(code=code, programs=all_programs)
+                all_events.extend(events)
+
+                # Check for errors in execution
+                if not self._check_execution_success(events):
+                    error_msg = f"Primitive {primitive_func} failed during execution"
+                    return False, all_events, error_msg
+
                 steps += 1
+                print(f"\033[32m[HTN] Primitive {primitive_func} completed successfully\033[0m")
 
+            except KeyError as e:
+                error_msg = f"Missing expected field in task payload: {e}"
+                print(f"\033[31m[HTN] {error_msg}\033[0m")
+                return False, all_events, error_msg
             except Exception as e:
                 error_msg = f"Error executing primitive {task}: {e}"
                 print(f"\033[31m[HTN] {error_msg}\033[0m")

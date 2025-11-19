@@ -28,19 +28,22 @@ Your job is to write a JavaScript function to accomplish the task by:
 2. Writing a complete async function that handles the task
 3. Using ONLY the primitives and known skills listed above
 4. Calling other skills or primitives to handle missing dependencies
-5. Calling the minimum number of skills necessary. 
+5. Calling the minimum number of skills necessary.
 6. Using bot.chat() to communicate progress and issues
+
 
 IMPORTANT RULES:
 - You MUST write a complete async function
 - You MUST name the function appropriately (e.g., craftStonePickaxe, mineIronOre)
-- You MAY NOT skip crafting items, even if they are currently in inventory. 
+- You MUST pass ALL required arguments to primitives (e.g., mineBlock(bot, 'stone', 3))
+- You MAY NOT skip crafting items, even if they are currently in inventory
 - You MAY call mineflayer primitives (mineBlock, craftItem, smeltItem, placeItem, killMob, etc.)
 - You MAY call known skills that are listed above
 - You MAY NOT call functions that don't exist in the available lists
-- You MUST handle inventory checks and missing materials within your code
-- You MUST use bot.inventory.count(mcData.itemsByName.item_name.id) to check quantities
+- You MAY NOT handle inventory checks and missing materials within your code
 - You SHOULD call other skills/primitives to gather missing materials
+- Arguments MUST be concrete values or expressions (bot, 'stone', 3, bot.inventory.count(...), etc.)
+- String literals MUST be quoted (e.g., 'stone', "oak_log")
 
 RESPONSE FORMAT:
 {response_format}

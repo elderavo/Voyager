@@ -77,6 +77,14 @@ class SkillManager:
         if primitives:
             print(f"\033[33mSkill Manager storing {len(primitives)} primitives for {program_name}\033[0m")
 
+        # Get recipe metadata from LLM response
+        recipe = info.get("recipe", None)
+        if recipe:
+            print(f"\033[33mSkill Manager storing recipe for {program_name}:\033[0m")
+            print(f"\033[33m  Output: {recipe.get('output', 'unknown')}\033[0m")
+            print(f"\033[33m  Inputs: {recipe.get('inputs', [])}\033[0m")
+            print(f"\033[33m  CraftIn: {recipe.get('craftIn', 'unknown')}\033[0m")
+
         if program_name in self.skills:
             print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
             self.vectordb._collection.delete(ids=[program_name])
@@ -95,6 +103,7 @@ class SkillManager:
             "code": program_code,
             "description": skill_description,
             "primitives": primitives,  # Store primitive decomposition
+            "recipe": recipe,  # Store recipe metadata (inputs, output, craftIn)
         }
         assert self.vectordb._collection.count() == len(
             self.skills

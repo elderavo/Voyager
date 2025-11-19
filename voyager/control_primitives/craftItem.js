@@ -11,12 +11,24 @@ async function craftItem(bot, name, count = 1) {
     if (!itemByName) {
         throw new Error(`No item named ${name}`);
     }
-    const craftingTable = bot.findBlock({
+    let craftingTable = bot.findBlock({
         matching: mcData.blocksByName.crafting_table.id,
         maxDistance: 32,
     });
+
     if (!craftingTable) {
-        bot.chat("Craft without a crafting table");
+        // Check if we have a crafting table in inventory
+        const craftingTableItem = bot.inventory.findInventoryItem(mcData.itemsByName.crafting_table.id);
+        if (craftingTableItem) {
+            // Place the crafting table nearby
+            const craftingTablePosition = bot.entity.position.offset(1, 0, 0);
+            bot.chat("Placing crafting table");
+            await placeItem(bot, "crafting_table", craftingTablePosition);
+            // Update craftingTable variable after placing
+            craftingTable = bot.blockAt(craftingTablePosition);
+        } else {
+            bot.chat("Craft without a crafting table");
+        }
     } else {
         await bot.pathfinder.goto(
             new GoalLookAtBlock(craftingTable.position, bot.world)

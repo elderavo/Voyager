@@ -116,7 +116,7 @@ class CurriculumAgent:
             "hunger": 15,
             "position": 0,
             "equipment": 0,
-            "inventory": 0,
+            #"inventory": 0,
             "optional_inventory_items": 7,
             "chests": 0,
             "completed_tasks": 0,
@@ -136,7 +136,7 @@ class CurriculumAgent:
             "hunger",
             "position",
             "equipment",
-            "inventory",
+            #"inventory",
             "chests",
             "completed_tasks",
             "failed_tasks",
@@ -214,7 +214,7 @@ class CurriculumAgent:
             "hunger": f"Hunger: {hunger:.1f}/20\n\n",
             "position": f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n",
             "equipment": f"Equipment: {equipment}\n\n",
-            "inventory": f"Inventory ({inventory_used}/36): {inventory if inventory else 'Empty'}\n\n",
+            #"inventory": f"Inventory ({inventory_used}/36): {inventory if inventory else 'Empty'}\n\n",
             "chests": chest_observation,
             "completed_tasks": f"Completed tasks so far: {completed_tasks}\n\n",
             "failed_tasks": f"Failed tasks that are too hard: {failed_tasks}\n\n",
@@ -253,10 +253,10 @@ class CurriculumAgent:
         return HumanMessage(content=content)
 
     def propose_next_task(self, *, events, chest_observation, max_retries=5):
-        if self.progress == 0 and self.mode == "auto":
-            task = "Mine 1 wood log"
-            context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
-            return task, context
+        #if self.progress == 0 and self.mode == "auto":
+        #    task = "Mine 1 wood log"
+        #    context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
+        #    return task, context
 
         # hard code task when inventory is almost full
         if events:

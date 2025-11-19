@@ -266,26 +266,36 @@ class Voyager:
                     print(f"\033[32m[Voyager] Skill validated successfully\033[0m")
 
                     # Decompose skill into primitives and queue them
-                    self.htn_orchestrator.queue_tasks_from_skill(
+                    tasks_queued = self.htn_orchestrator.queue_tasks_from_skill(
                         response['program_code'],
                         response['program_name']
                     )
 
-                    # Execute queued primitive tasks
-                    success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
-
-                    if exec_error:
-                        # Execution error - return to trigger retry
-                        parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                    # Check if decomposition failed due to missing skills
+                    if tasks_queued < 0:
+                        missing = self.htn_orchestrator.missing_skills
+                        error_msg = f"Missing prerequisite skills: I don't know how to make {', '.join(missing)}. Please teach me these skills first."
+                        print(f"\033[31m[Voyager] Decomposition failed: {error_msg}\033[0m")
+                        parsed_result = f"Decomposition Error: {error_msg}"
                     else:
-                        # Success - return result in expected format
-                        parsed_result = {
-                            "program_code": response['program_code'],
-                            "program_name": response['program_name'],
-                            "exec_code": ""  # Code already executed by HTN via queue
-                        }
-                        self.recorder.record(events, self.task)
-                        self.last_events = copy.deepcopy(events) if events else []
+                        # Execute queued primitive tasks
+                        success, events, exec_error = self.htn_orchestrator.execute_queued_tasks(max_steps=100)
+
+                        if exec_error:
+                            # Execution error - return to trigger retry
+                            parsed_result = f"Execution Error: {exec_error}\nPlease fix the code."
+                        else:
+                            # Success - return result in expected format
+                            parsed_result = {
+                                "program_code": response['program_code'],
+                                "program_name": response['program_name'],
+                                "exec_code": ""  # Code already executed by HTN via queue
+                            }
+                            # Include recipe metadata if present
+                            if "recipe" in response:
+                                parsed_result["recipe"] = response["recipe"]
+                            self.recorder.record(events, self.task)
+                            self.last_events = copy.deepcopy(events) if events else []
             else:
                 raise ValueError("HTN system not initialized")
 
@@ -330,7 +340,9 @@ class Voyager:
                 )
                 self.recorder.record(events, self.task)
 
-            self.action_agent.update_chest_memory(events[-1][1]["nearbyChests"])
+            # Only update chest memory if we have events
+            if events and len(events) > 0:
+                self.action_agent.update_chest_memory(events[-1][1]["nearbyChests"])
             success, critique = self.critic_agent.check_task_success(
                 events=events,
                 task=self.task,
@@ -339,7 +351,7 @@ class Voyager:
                 max_retries=5,
             )
 
-            if self.reset_placed_if_failed and not success:
+            if self.reset_placed_if_failed and not success and events and len(events) > 0:
                 # revert all the placing event in the last step
                 blocks = []
                 positions = []
@@ -353,8 +365,9 @@ class Voyager:
                     f"await givePlacedItemBack(bot, {U.json_dumps(blocks)}, {U.json_dumps(positions)})",
                     programs=self.skill_manager.programs,
                 )
-                events[-1][1]["inventory"] = new_events[-1][1]["inventory"]
-                events[-1][1]["voxels"] = new_events[-1][1]["voxels"]
+                if new_events and len(new_events) > 0:
+                    events[-1][1]["inventory"] = new_events[-1][1]["inventory"]
+                    events[-1][1]["voxels"] = new_events[-1][1]["voxels"]
             new_skills = self.skill_manager.retrieve_skills(
                 query=self.context
                 + "\n\n"
@@ -375,6 +388,43 @@ class Voyager:
             self.recorder.record([], self.task)
             print(f"\033[34m{parsed_result} Trying again!\033[0m")
             success = False  # String result means failure - need to retry
+
+            # CRITICAL FIX: Add error feedback to conversation so LLM learns from mistakes
+            # Extract the code that failed from the last AI message
+            failed_code = ""
+            if self.conversations:
+                # Last conversation is (system, human, ai)
+                last_ai_content = self.conversations[-1][2]
+                # Try to extract program_code from the JSON response
+                try:
+                    import json
+                    # AI message might have markdown code fence
+                    if "```json" in last_ai_content:
+                        json_start = last_ai_content.find("```json") + 7
+                        json_end = last_ai_content.find("```", json_start)
+                        json_str = last_ai_content[json_start:json_end].strip()
+                        parsed = json.loads(json_str)
+                        failed_code = parsed.get("program_code", "")
+                except Exception:
+                    # If parsing fails, just use the whole AI message
+                    failed_code = last_ai_content
+
+            # Retrieve skills for updated system message (may have changed)
+            new_skills = self.skill_manager.retrieve_skills(query=self.context)
+            system_message = self.action_agent.render_system_message(skills=new_skills)
+
+            # Create human message with error feedback as critique
+            error_human_message = self.action_agent.render_human_message(
+                events=[],  # No events since validation failed before execution
+                code=failed_code,  # Show the code that failed validation
+                task=self.task,
+                context=self.context,
+                critique=parsed_result  # The validation error becomes the critique
+            )
+
+            # Update messages for next retry - LLM will now see the error!
+            self.messages = [system_message, error_human_message]
+
         assert len(self.messages) == 2
         self.action_agent_rollout_num_iter += 1
         done = (
@@ -397,6 +447,11 @@ class Voyager:
             if self.htn_orchestrator and self.htn_orchestrator.last_primitives_used:
                 info["primitives"] = self.htn_orchestrator.last_primitives_used
                 print(f"\033[36m[Voyager] Adding {len(info['primitives'])} primitives to skill info\033[0m")
+
+            # Add recipe metadata from LLM response
+            if "recipe" in parsed_result and parsed_result["recipe"]:
+                info["recipe"] = parsed_result["recipe"]
+                print(f"\033[36m[Voyager] Adding recipe metadata to skill info\033[0m")
         else:
             print(
                 f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"

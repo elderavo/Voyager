@@ -26,6 +26,9 @@ class CriticAgent:
         return system_message
 
     def render_human_message(self, *, events, task, context, chest_observation):
+        if not events or len(events) == 0:
+            print(f"\033[31mCritic Agent: No events to evaluate\033[0m")
+            return None
         assert events[-1][0] == "observe", "Last event must be observe"
         biome = events[-1][1]["status"]["biome"]
         time_of_day = events[-1][1]["status"]["timeOfDay"]
@@ -123,6 +126,10 @@ class CriticAgent:
             context=context,
             chest_observation=chest_observation,
         )
+
+        # If no events to evaluate, task failed
+        if human_message is None:
+            return False, "No events to evaluate - execution may have failed"
 
         messages = [
             self.render_system_message(),

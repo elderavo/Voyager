@@ -4,7 +4,12 @@ You MUST output a JSON dictionary with the following fields:
 {
   "program_code": "<complete JavaScript async function>",
   "program_name": "<function_name_in_camelCase>",
-  "reasoning": "<brief explanation of your approach>"
+  "reasoning": "<brief explanation of your approach>",
+  "recipe": {
+    "inputs": ["<list>", "<of>", "<ingredient>", "<item>", "<names>"],
+    "output": "<item_name_this_skill_produces>",
+    "craftIn": "<crafting_table|furnace|2x2_grid|null>"
+  }
 }
 ```
 
@@ -12,16 +17,39 @@ Rules:
 - "program_code" must be a complete, valid JavaScript async function
 - The function must be named according to "program_name"
 - The function must take a single parameter: bot
-- You must use ONLY primitives and known skills from the available list
-- Check inventory before using items: bot.inventory.count(mcData.itemsByName.item_name.id)
-- Handle missing materials by calling other skills/primitives
+- You must use ONLY known skills from the available list, only use primitives if necessary
+- Primitive calls must include their required arguments (e.g., mineBlock(bot, 'stone', 3))
+- NEVER include inventory checks in your code - the system handles prerequisites automatically
 - Use bot.chat() to communicate what you're doing
+- "recipe" metadata MUST be included:
+  - "inputs": list of item names needed to create the output (empty array [] if gathering from world)
+  - "output": the item name this skill produces
+  - "craftIn": where to craft ("crafting_table", "furnace", "2x2_grid", or null for gathering skills)
 
-Example output:
+Example for crafting skill:
 ```json
 {
-  "program_code": "async function craftStonePickaxe(bot) {\n  const cobblestoneCount = bot.inventory.count(mcData.itemsByName.cobblestone.id);\n  const sticksCount = bot.inventory.count(mcData.itemsByName.stick.id);\n  \n  if (cobblestoneCount < 3) {\n    bot.chat('Need more cobblestone');\n    await mineBlock(bot, 'stone', 3 - cobblestoneCount);\n  }\n  \n  if (sticksCount < 2) {\n    bot.chat('Need sticks');\n    await craftItem(bot, 'stick', 2 - sticksCount);\n  }\n  \n  await craftItem(bot, 'stone_pickaxe', 1);\n  bot.chat('Stone pickaxe crafted!');\n}",
-  "program_name": "craftStonePickaxe",
-  "reasoning": "Check for cobblestone and sticks, mine/craft missing materials, then craft the pickaxe"
+  "program_code": "async function craftWoodenPickaxe(bot) {\n  bot.chat('Crafting wooden pickaxe');\n  await craftItem(bot, 'stick', 2);\n  await craftItem(bot, 'wooden_pickaxe', 1);\n  bot.chat('Wooden pickaxe ready!');\n}",
+  "program_name": "craftWoodenPickaxe",
+  "reasoning": "Craft sticks first, then use them with planks to craft the pickaxe",
+  "recipe": {
+    "inputs": ["stick", "planks"],
+    "output": "wooden_pickaxe",
+    "craftIn": "crafting_table"
+  }
+}
+```
+
+Example for gathering skill:
+```json
+{
+  "program_code": "async function mineWoodLog(bot) {\n  bot.chat('Mining wood log');\n  await mineBlock(bot, 'birch_log', 1);\n  bot.chat('Wood log obtained!');\n}",
+  "program_name": "mineWoodLog",
+  "reasoning": "Mine a birch log from nearby tree",
+  "recipe": {
+    "inputs": [],
+    "output": "birch_log",
+    "craftIn": null
+  }
 }
 ```
