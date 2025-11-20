@@ -421,21 +421,11 @@ class Voyager:
                     print("Your last round rollout terminated due to error:")
                     print(f"\033[41m{e}\033[0m")
 
-            # Reset bot status after each task (for both executor and action agent paths)
-            # This preserves inventory between tasks as intended
-            inventory_before = self.last_events[-1][1]["inventory"]
-            print(f"\033[36m[DEBUG] Resetting bot status after task, preserving inventory\033[0m")
-            print(f"\033[36m[DEBUG] Inventory before task reset: {inventory_before}\033[0m")
-            self.last_events = self.env.reset(
-                options={
-                    "mode": "hard",
-                    "wait_ticks": self.env_wait_ticks,
-                    "inventory": inventory_before,
-                    "equipment": self.last_events[-1][1]["status"]["equipment"],
-                    "position": self.last_events[-1][1]["status"]["position"],
-                }
-            )
-            print(f"\033[36m[DEBUG] Inventory after task reset: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
+            # Soft reset between tasks - no need to restart mineflayer server
+            # Just get fresh state with a simple step
+            print(f"\033[36m[DEBUG] Getting fresh state after task (soft refresh, no restart)\033[0m")
+            self.last_events = self.env.step("")
+            print(f"\033[36m[DEBUG] Inventory after task: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
 
             if info["success"]:
                 # Only save as a new skill if it's not a one-line primitive
