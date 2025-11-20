@@ -11,6 +11,7 @@ from .agents import ActionAgent
 from .agents import CriticAgent
 from .agents import CurriculumAgent
 from .agents import SkillManager
+from .executor import Executor
 
 
 # TODO: remove event memory
@@ -155,6 +156,14 @@ class Voyager:
         self.recorder = U.EventRecorder(ckpt_dir=ckpt_dir, resume=resume)
         self.resume = resume
 
+        # init Executor for direct primitive execution and recursive skill discovery
+        self.executor = Executor(
+            env=self.env,
+            skill_manager=self.skill_manager,
+            ckpt_dir=skill_library_dir if skill_library_dir else ckpt_dir,
+            max_recursion_depth=5,
+        )
+
         # init variables for rollout
         self.action_agent_rollout_num_iter = -1
         self.task = None
@@ -279,11 +288,76 @@ class Voyager:
             ), "program and program_name must be returned when success"
             info["program_code"] = parsed_result["program_code"]
             info["program_name"] = parsed_result["program_name"]
+            info["is_one_line_primitive"] = parsed_result.get("is_one_line_primitive", False)
         else:
             print(
                 f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"
             )
         return self.messages, 0, done, info
+
+    def executor_craft(self, item_name: str) -> Dict:
+        """
+        Execute crafting using the Executor (parallel path to rollout).
+
+        This method uses direct primitive execution and recursive dependency
+        resolution instead of the LLM-based Action Agent.
+
+        Args:
+            item_name: Name of item to craft (e.g., "stick", "planks", "wooden_pickaxe")
+
+        Returns:
+            info dict with keys:
+                - task: str
+                - success: bool
+                - program_name: str (if success)
+                - program_code: str (if success)
+                - execution_sequence: List[ExecutionStep] (if success)
+        """
+        print(f"\033[35m****Executor Mode: Crafting {item_name}****\033[0m")
+        print(f"\033[36m[DEBUG] Input item name: '{item_name}'\033[0m")
+
+        try:
+            # Use executor to craft item (handles recursive discovery)
+            print(f"\033[36m[DEBUG] Calling executor.craft_item('{item_name}')\033[0m")
+            success, events = self.executor.craft_item(item_name)
+            print(f"\033[36m[DEBUG] Executor returned success={success}, events count={len(events) if events else 0}\033[0m")
+
+            # Update last_events for compatibility with existing flow
+            if events:
+                self.last_events = events
+
+            # Build info dict
+            info = {
+                "task": f"Craft {item_name}",
+                "success": success,
+            }
+
+            if success:
+                # Get the skill name
+                skill_name = self.executor._to_camel_case(f"craft_{item_name}")
+                print(f"\033[36m[DEBUG] Looking for skill: '{skill_name}'\033[0m")
+
+                # The skill should now exist in skill_manager
+                if skill_name in self.skill_manager.skills:
+                    print(f"\033[32m[DEBUG] Found skill in skill_manager\033[0m")
+                    info["program_name"] = skill_name
+                    info["program_code"] = self.skill_manager.skills[skill_name]["code"]
+                    info["executor_mode"] = True
+                else:
+                    print(f"\033[31m[DEBUG] Skill NOT found in skill_manager!\033[0m")
+                    print(f"\033[31m[DEBUG] Available skills: {list(self.skill_manager.skills.keys())}\033[0m")
+
+            return info
+
+        except Exception as e:
+            print(f"\033[31mExecutor crafting error: {e}\033[0m")
+            import traceback
+            traceback.print_exc()
+            return {
+                "task": f"Craft {item_name}",
+                "success": False,
+                "error": str(e),
+            }
 
     def rollout(self, *, task, context, reset_env=True):
         self.reset(task=task, context=context, reset_env=reset_env)
@@ -293,9 +367,10 @@ class Voyager:
                 break
         return messages, reward, done, info
 
-    def learn(self, reset_env=True):
+    def learn(self, reset_env=True, use_executor=True):
         if self.resume:
             # keep the inventory
+            print(f"\033[36m[DEBUG] Resuming with soft reset (keeping inventory)\033[0m")
             self.env.reset(
                 options={
                     "mode": "soft",
@@ -304,14 +379,18 @@ class Voyager:
             )
         else:
             # clear the inventory
+            print(f"\033[36m[DEBUG] Starting fresh with hard reset (clearing inventory)\033[0m")
             self.env.reset(
                 options={
                     "mode": "hard",
                     "wait_ticks": self.env_wait_ticks,
                 }
             )
+            # After initial hard reset, subsequent resets within the learning loop
+            # will preserve inventory between tasks
             self.resume = True
         self.last_events = self.env.step("")
+        print(f"\033[36m[DEBUG] Initial inventory after reset: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
 
         while True:
             if self.recorder.iteration > self.max_iterations:
@@ -325,18 +404,42 @@ class Voyager:
             print(
                 f"\033[35mStarting task {task} for at most {self.action_agent_task_max_retries} times\033[0m"
             )
-            try:
-                messages, reward, done, info = self.rollout(
-                    task=task,
-                    context=context,
-                    reset_env=reset_env,
-                )
-            except Exception as e:
-                time.sleep(3)  # wait for mineflayer to exit
-                info = {
-                    "task": task,
-                    "success": False,
-                }
+
+            # Check if we should use executor mode for this task
+            if use_executor and task.lower().startswith("craft "):
+                # Extract item name from task
+                item_name = task[6:].strip()  # Remove "Craft " prefix
+                print(f"\033[36m[Executor Mode] Crafting: {item_name}\033[0m")
+                print(f"\033[36m[DEBUG] Current inventory before crafting: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
+
+                try:
+                    info = self.executor_craft(item_name)
+                except Exception as e:
+                    time.sleep(3)  # wait for mineflayer to exit
+                    info = {
+                        "task": task,
+                        "success": False,
+                    }
+                    print(f"\033[31m[Executor Mode] Error: {e}\033[0m")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                # Use existing Action Agent path
+                try:
+                    messages, reward, done, info = self.rollout(
+                        task=task,
+                        context=context,
+                        reset_env=reset_env,
+                    )
+                except Exception as e:
+                    time.sleep(3)  # wait for mineflayer to exit
+                    info = {
+                        "task": task,
+                        "success": False,
+                    }
+                    # use red color background to print the error
+                    print("Your last round rollout terminated due to error:")
+                    print(f"\033[41m{e}\033[0m")
                 # reset bot status here
                 self.last_events = self.env.reset(
                     options={
@@ -347,12 +450,13 @@ class Voyager:
                         "position": self.last_events[-1][1]["status"]["position"],
                     }
                 )
-                # use red color background to print the error
-                print("Your last round rollout terminated due to error:")
-                print(f"\033[41m{e}\033[0m")
 
             if info["success"]:
-                self.skill_manager.add_new_skill(info)
+                # Only save as a new skill if it's not a one-line primitive
+                if not info.get("is_one_line_primitive", False):
+                    self.skill_manager.add_new_skill(info)
+                else:
+                    print(f"\033[33mSkipping skill save for one-line primitive: {info.get('program_name', 'unknown')}\033[0m")
 
             self.curriculum_agent.update_exploration_progress(info)
             print(

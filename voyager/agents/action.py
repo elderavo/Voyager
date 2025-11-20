@@ -254,16 +254,73 @@ class ActionAgent:
                 ), f"Main function {main_function['name']} must take a single argument named 'bot'"
                 program_code = "\n\n".join(function["body"] for function in functions)
                 exec_code = f"await {main_function['name']}(bot);"
+
+                # Check if this is a one-line primitive call
+                is_one_line_primitive = self._is_one_line_primitive(parsed, main_function)
+
                 return {
                     "program_code": program_code,
                     "program_name": main_function["name"],
                     "exec_code": exec_code,
+                    "is_one_line_primitive": is_one_line_primitive,
                 }
             except Exception as e:
                 retry -= 1
                 error = e
                 time.sleep(1)
         return f"Error parsing action response (before program execution): {error}"
+
+    def _is_one_line_primitive(self, parsed_code, main_function):
+        """
+        Check if the main function body contains only a single statement that is
+        a direct call to a primitive or known skill (not a new skill worth saving).
+
+        Returns True if:
+        - The function body has exactly 1 statement
+        - That statement is a return/expression statement with an await call
+        """
+        try:
+            babel = require("@babel/core")
+
+            # Find the main function's AST node
+            main_func_node = None
+            for node in parsed_code.program.body:
+                if (node.type == "FunctionDeclaration" and
+                    hasattr(node, 'id') and
+                    node.id.name == main_function["name"]):
+                    main_func_node = node
+                    break
+
+            if not main_func_node:
+                return False
+
+            # Check the function body
+            body_statements = list(main_func_node.body.body)
+
+            # Filter out empty statements or pure comments
+            actual_statements = [
+                stmt for stmt in body_statements
+                if stmt.type not in ["EmptyStatement"]
+            ]
+
+            # Must be exactly 1 statement
+            if len(actual_statements) != 1:
+                return False
+
+            stmt = actual_statements[0]
+
+            # Check if it's a return statement with await, or expression statement with await
+            if stmt.type == "ReturnStatement":
+                return stmt.argument and stmt.argument.type == "AwaitExpression"
+            elif stmt.type == "ExpressionStatement":
+                return stmt.expression.type == "AwaitExpression"
+
+            return False
+
+        except Exception as e:
+            # If we can't parse it properly, assume it's not a one-liner
+            print(f"\033[33mWarning: Could not check if one-line primitive: {e}\033[0m")
+            return False
 
     def summarize_chatlog(self, events):
         def filter_item(message: str):
