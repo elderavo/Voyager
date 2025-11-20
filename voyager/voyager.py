@@ -297,55 +297,31 @@ class Voyager:
 
     def executor_craft(self, item_name: str) -> Dict:
         """
-        Execute crafting using the Executor (parallel path to rollout).
-
-        This method uses direct primitive execution and recursive dependency
-        resolution instead of the LLM-based Action Agent.
-
-        Args:
-            item_name: Name of item to craft (e.g., "stick", "planks", "wooden_pickaxe")
-
-        Returns:
-            info dict with keys:
-                - task: str
-                - success: bool
-                - program_name: str (if success)
-                - program_code: str (if success)
-                - execution_sequence: List[ExecutionStep] (if success)
+        Executor-based crafting with quantity support.
         """
+
         print(f"\033[35m****Executor Mode: Crafting {item_name}****\033[0m")
-        print(f"\033[36m[DEBUG] Input item name: '{item_name}'\033[0m")
 
         try:
-            # Use executor to craft item (handles recursive discovery)
-            print(f"\033[36m[DEBUG] Calling executor.craft_item('{item_name}')\033[0m")
-            success, events = self.executor.craft_item(item_name)
-            print(f"\033[36m[DEBUG] Executor returned success={success}, events count={len(events) if events else 0}\033[0m")
+            success, events, normalized_name = self.executor.craft_item(item_name)
 
-            # Update last_events for compatibility with existing flow
-            if events:
+            print(f"[DEBUG] Executor returned success={success}, events count={len(events) if events else 0}")
+
+            # Only store Mineflayer-style events
+            if isinstance(events, list) and events and isinstance(events[0], tuple):
                 self.last_events = events
 
-            # Build info dict
             info = {
                 "task": f"Craft {item_name}",
                 "success": success,
+                "executor_mode": True,
             }
 
             if success:
-                # Get the skill name
-                skill_name = self.executor._to_camel_case(f"craft_{item_name}")
-                print(f"\033[36m[DEBUG] Looking for skill: '{skill_name}'\033[0m")
-
-                # The skill should now exist in skill_manager
+                skill_name = f"craft{self.executor._to_camel_case(normalized_name)}"
                 if skill_name in self.skill_manager.skills:
-                    print(f"\033[32m[DEBUG] Found skill in skill_manager\033[0m")
                     info["program_name"] = skill_name
                     info["program_code"] = self.skill_manager.skills[skill_name]["code"]
-                    info["executor_mode"] = True
-                else:
-                    print(f"\033[31m[DEBUG] Skill NOT found in skill_manager!\033[0m")
-                    print(f"\033[31m[DEBUG] Available skills: {list(self.skill_manager.skills.keys())}\033[0m")
 
             return info
 
@@ -359,6 +335,7 @@ class Voyager:
                 "error": str(e),
             }
 
+
     def rollout(self, *, task, context, reset_env=True):
         self.reset(task=task, context=context, reset_env=reset_env)
         while True:
@@ -371,24 +348,27 @@ class Voyager:
         if self.resume:
             # keep the inventory
             print(f"\033[36m[DEBUG] Resuming with soft reset (keeping inventory)\033[0m")
-            self.env.reset(
+            self.last_events = self.env.reset(
                 options={
                     "mode": "soft",
                     "wait_ticks": self.env_wait_ticks,
                 }
             )
         else:
-            # clear the inventory
-            print(f"\033[36m[DEBUG] Starting fresh with hard reset (clearing inventory)\033[0m")
-            self.env.reset(
+            # clear the inventory - MUST use hard reset with no inventory parameter
+            print(f"\033[36m[DEBUG] Starting fresh with HARD reset (clearing inventory)\033[0m")
+            self.last_events = self.env.reset(
                 options={
                     "mode": "hard",
                     "wait_ticks": self.env_wait_ticks,
+                    # Explicitly do NOT pass inventory - let it default to {}
                 }
             )
             # After initial hard reset, subsequent resets within the learning loop
             # will preserve inventory between tasks
             self.resume = True
+
+        # Get fresh state after reset
         self.last_events = self.env.step("")
         print(f"\033[36m[DEBUG] Initial inventory after reset: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
 
@@ -440,16 +420,22 @@ class Voyager:
                     # use red color background to print the error
                     print("Your last round rollout terminated due to error:")
                     print(f"\033[41m{e}\033[0m")
-                # reset bot status here
-                self.last_events = self.env.reset(
-                    options={
-                        "mode": "hard",
-                        "wait_ticks": self.env_wait_ticks,
-                        "inventory": self.last_events[-1][1]["inventory"],
-                        "equipment": self.last_events[-1][1]["status"]["equipment"],
-                        "position": self.last_events[-1][1]["status"]["position"],
-                    }
-                )
+
+            # Reset bot status after each task (for both executor and action agent paths)
+            # This preserves inventory between tasks as intended
+            inventory_before = self.last_events[-1][1]["inventory"]
+            print(f"\033[36m[DEBUG] Resetting bot status after task, preserving inventory\033[0m")
+            print(f"\033[36m[DEBUG] Inventory before task reset: {inventory_before}\033[0m")
+            self.last_events = self.env.reset(
+                options={
+                    "mode": "hard",
+                    "wait_ticks": self.env_wait_ticks,
+                    "inventory": inventory_before,
+                    "equipment": self.last_events[-1][1]["status"]["equipment"],
+                    "position": self.last_events[-1][1]["status"]["position"],
+                }
+            )
+            print(f"\033[36m[DEBUG] Inventory after task reset: {self.last_events[-1][1].get('inventory', {}) if self.last_events else 'N/A'}\033[0m")
 
             if info["success"]:
                 # Only save as a new skill if it's not a one-line primitive

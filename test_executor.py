@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 from voyager import Voyager
+import time
 
 def test_executor_mode(voyager):
     """
@@ -24,6 +25,9 @@ def test_executor_mode(voyager):
     print("\n" + "="*70)
     print("TESTING EXECUTOR MODE")
     print("="*70 + "\n")
+    
+    voyager.env.reset()
+
 
     # Test 1: Craft planks (requires gathering logs)
     print("\n--- Test 1: Craft Planks ---")
@@ -70,21 +74,18 @@ def main():
     parser.add_argument(
         "--mc-port",
         type=int,
-        default=None,
+        default=25565,
         help="Minecraft server port"
-    )
-    parser.add_argument(
-        "--openai-api-key",
-        type=str,
-        default=None,
-        help="OpenAI API key"
     )
 
     args = parser.parse_args()
 
     # Get API key from environment if not provided
     import os
-    api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
+    with open(r"C:\Users\Alex\OneDrive - Naval Postgraduate School\Desktop\openAIKey.txt", "r") as f:
+        api_key = f.read().strip()
+
+    #api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         print("ERROR: Please provide OpenAI API key via --openai-api-key or OPENAI_API_KEY env var")
         return
@@ -92,12 +93,13 @@ def main():
     # Initialize Voyager
     print("Initializing Voyager...")
     voyager = Voyager(
+        mc_host="10.0.132.101",
         mc_port=args.mc_port,
         openai_api_key=api_key,
         ckpt_dir="ckpt_executor_test",
         resume=False,
     )
-
+    
     try:
         if args.mode == "executor":
             test_executor_mode(voyager)

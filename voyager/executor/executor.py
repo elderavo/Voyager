@@ -80,6 +80,9 @@ class Executor:
             "lapis_ore", "redstone_ore", "emerald_ore", "coal", "sand", "gravel",
         }
 
+        # Cache for available items (populated on first use)
+        self._available_items_cache = None
+
         print(f"\033[36mExecutor initialized with max recursion depth: {max_recursion_depth}\033[0m")
 
     def execute_skill(self, skill_name: str) -> Tuple[bool, List[Any]]:
@@ -133,10 +136,17 @@ class Executor:
             print(f"\033[31mMax recursion depth {self.max_recursion_depth} exceeded for {skill_name}\033[0m")
             return False, []
 
-        # If skill already exists, we're done
+        # If skill exists, try executing it first
         if skill_name in self.skill_manager.skills:
-            print(f"\033[36mSkill '{skill_name}' already exists\033[0m")
-            return True, [ExecutionStep("skill", skill_name, [], success=True)]
+            print(f"\033[36mSkill '{skill_name}' already exists — testing it\033[0m")
+            success, events = self.execute_skill(skill_name)
+
+            # If old skill still works, use it
+            if success:
+                return True, [ExecutionStep("skill", skill_name, [], success=True)]
+            
+            print(f"\033[33mSkill '{skill_name}' is outdated — re-discovering\033[0m")
+            # FALL THROUGH to full skill discovery (DEPENDENCY PARSE + SYNTHESIS)
 
         print(f"\033[36mDiscovering skill: {skill_name} (depth: {depth})\033[0m")
 
@@ -213,29 +223,65 @@ class Executor:
             self.task_stack.pop()
             return False, []
 
-    def craft_item(self, item_name: str) -> Tuple[bool, List[Any]]:
+    def craft_item(self, item_name: str) -> Tuple[bool, List[Any], str]:
         """
-        High-level helper to craft an item.
-
-        Ensures the crafting skill exists, then executes it.
-
-        Args:
-            item_name: Name of item to craft (e.g., "stick", "planks")
-
-        Returns:
-            (success: bool, events: List)
+        High-level helper to craft an item WITH QUANTITY SUPPORT.
+        Always returns (success, events, normalized_name).
         """
-        skill_name = f"craft{self._to_camel_case(item_name)}"
 
-        # Ensure skill exists
-        success, _ = self.ensure_skill(skill_name, depth=0)
+        # =========================
+        # 1. Extract quantity
+        # =========================
+        raw = item_name.strip()
+        qty_match = re.match(r"^(\d+)\s+", raw)
+        quantity = int(qty_match.group(1)) if qty_match else 1
 
-        if not success:
-            print(f"\033[31mFailed to ensure skill for crafting {item_name}\033[0m")
-            return False, []
+        # =========================
+        # 2. Normalize item name
+        # =========================
+        normalized = self._normalize_item_name(item_name)
 
-        # Execute the skill
-        return self.execute_skill(skill_name)
+        # Case A: direct match
+        if isinstance(normalized, str):
+            normalized_name = normalized
+
+        # Case B: suggestion available → auto-accept suggestion
+        elif isinstance(normalized, dict) and normalized.get("suggestions"):
+            suggestion = normalized["suggestions"][0]
+            print(f"[DEBUG] Normalizing '{item_name}' → '{suggestion}' (auto-correct)")
+            normalized_name = suggestion
+
+        # Case C: neither match nor suggestions
+        else:
+            print(f"[DEBUG] Could not normalize '{item_name}' → no usable match")
+            return False, [], ""
+
+        # =========================
+        # 3. Build skill name
+        # (skill ALWAYS crafts exactly 1 unit)
+        # =========================
+        skill_name = f"craft{self._to_camel_case(normalized_name)}"
+
+        # =========================
+        # 4. Ensure 1-unit skill exists
+        # =========================
+        skill_ok, _ = self.ensure_skill(skill_name, depth=0)
+        if not skill_ok:
+            print(f"\033[31mFailed to ensure skill for crafting {normalized_name}\033[0m")
+            return False, [], normalized_name
+
+        # =========================
+        # 5. Quantity execution logic
+        # =========================
+        all_events = []
+        for i in range(quantity):
+            success, events = self.execute_skill(skill_name)
+            all_events.extend(events)
+            if not success:
+                print(f"[DEBUG] Failed at batch craft {i+1}/{quantity}")
+                return False, all_events, normalized_name
+
+        return True, all_events, normalized_name
 
     # ==================== Private Helper Methods ====================
 
@@ -382,12 +428,12 @@ class Executor:
                 print(f"\033[31m[DEBUG] Found error event, returning False: {error_msg}\033[0m")
                 return False
             if event_type == "onChat":
-                message = event.get("onChat", "")
+                message = event.get("onChat", "").lower()
                 print(f"\033[36m[DEBUG] Chat message for success check: {message}\033[0m")
-                if "I cannot" in message or "failed" in message.lower():
+                if any(x in message for x in ["no ", "cannot", "can't", "failed", "not enough", "no nearby"]):
                     print(f"\033[31m[DEBUG] Chat indicates failure, returning False\033[0m")
                     return False
-                if "I did the recipe" in message or "mined" in message.lower():
+                if "i did the recipe" in message or "mined" in message:
                     print(f"\033[32m[DEBUG] Chat indicates success, returning True\033[0m")
                     return True
 
@@ -429,6 +475,167 @@ class Executor:
 
         self.skill_manager.add_new_skill(info)
         print(f"\033[32m✓ Registered skill: {skill_name}\033[0m")
+
+    def _get_available_items(self) -> List[str]:
+        """
+        Get list of all available item names from Mineflayer mcData.
+
+        Returns:
+            List of valid item names
+        """
+        if self._available_items_cache is not None:
+            return self._available_items_cache
+
+        print(f"\033[36m[DEBUG] Fetching available items from mcData\033[0m")
+
+        # Execute JavaScript to get all item names
+        code = """
+        const itemNames = Object.keys(bot.registry.itemsByName);
+        bot.chat(`ITEMS_LIST:${itemNames.join(',')}`);
+        """
+        
+        events = self.env.step(code=code, programs=self.skill_manager.programs)
+
+        # Parse the chat message containing item names
+        for event_type, event in events:
+            if event_type == "onChat":
+                message = event.get("onChat", "")
+                if message.startswith("ITEMS_LIST:"):
+                    items_str = message[11:]  # Remove "ITEMS_LIST:" prefix
+                    self._available_items_cache = items_str.split(',')
+                    print(f"\033[36m[DEBUG] Loaded {len(self._available_items_cache)} items from registry\033[0m")
+                    return self._available_items_cache
+
+        print(f"\033[31m[DEBUG] Failed to fetch items from mcData\033[0m")
+        return []
+
+    def _normalize_item_name(self, raw_name: str) -> Optional[str]:
+        """
+        Normalize a curriculum-supplied item name into a canonical Mineflayer item id.
+
+        This version does NOT fetch or dump the entire item registry.
+        It offloads matching to Mineflayer side via `_match_item_js()`.
+        """
+
+        print(f"\033[36m[DEBUG] Normalizing item name: '{raw_name}'\033[0m")
+
+        # Remove quantity prefixes ("4 planks", "3 oak logs", "a log", "an apple")
+        cleaned = re.sub(r'^\d+\s+', '', raw_name.strip())
+        cleaned = re.sub(r'^an?\s+', '', cleaned)
+
+        # Lowercase and convert spaces → underscores
+        normalized = cleaned.lower().replace(" ", "_")
+
+        print(f"\033[36m[DEBUG] After cleanup → '{normalized}'\033[0m")
+
+        # Offload the fuzzy search to Mineflayer
+        match = self._match_item_js(normalized)
+
+        if match:
+            print(f"\033[32m[DEBUG] Matched item: {match}\033[0m")
+            return match
+        
+        suggestion = self._fallback_suggest_item(normalized)
+        if suggestion:
+            return {
+                "match": None,
+                "suggestions": suggestion,
+                "raw": raw_name,
+                "cleaned": normalized,
+            }
+
+        print(f"[DEBUG] No match and no suggestion for '{normalized}'")
+        return {
+            "match": None,
+            "suggestions": [],
+            "raw": raw_name,
+            "cleaned": normalized,
+        }
+
+    def _fallback_suggest_item(self, normalized: str) -> Optional[List[str]]:
+        """
+        When Mineflayer cannot match the item, try inference based on inventory.
+        E.g., 'wooden_planks' -> 'oak_planks'
+            'planks' -> 'oak_planks' if oak_log present
+            'log' -> 'oak_log' if oak_log present
+        """
+        # Use last known inventory
+        inv = {}
+        try:
+            inv = self.env.last_observation["inventory"]
+        except Exception:
+            pass
+
+        logs = [name for name in inv.keys() if name.endswith("_log")]
+
+        # Heuristic 1: wooden_planks → oak_planks if only oak_log exists
+        if normalized in ("planks", "wooden_planks"):
+            if logs:
+                # pick the only log type you actually have
+                base = logs[0].split("_log")[0]
+                return [f"{base}_planks"]
+            # otherwise generic guess
+            return ["oak_planks"]
+
+        # Heuristic 2: "log" when only one log type exists
+        if normalized == "log" and logs:
+            return [logs[0]]
+
+        return None
+
+    def _match_item_js(self, normalized: str) -> Optional[str]:
+        js_query = normalized.replace("'", "\\'")
+
+        # Stricter matching order:
+        # 1. exact
+        # 2. startsWith
+        # 3. underscore-insensitive exact
+        # 4. substring
+        # 5. underscore-insensitive substring
+        code = f"""
+            const q = '{js_query}';
+            const qplain = q.replace(/_/g, '');
+
+            let best = null;
+
+            for (const name of Object.keys(bot.registry.itemsByName)) {{
+                const plain = name.replace(/_/g, '');
+
+                // 1. Exact match
+                if (name === q) {{ best = name; break; }}
+
+                // 2. Prefix match ("stick" → "stick", not "sticky_piston")
+                if (name.startsWith(q)) {{ best = name; break; }}
+
+                // 3. Underscore-insensitive exact
+                if (plain === qplain) {{ best = name; break; }}
+
+                // 4. Substring (only if q > 3 chars)
+                if (q.length >= 4 && name.includes(q)) {{
+                    best = name;
+                    break;
+                }}
+
+                // 5. Underscore-insensitive substring
+                if (q.length >= 4 && plain.includes(qplain)) {{
+                    best = name;
+                    break;
+                }}
+            }}
+
+            bot.chat("MATCH_RESULT:" + (best || "null"));
+        """
+
+        events = self.env.step(code=code, programs=self.skill_manager.programs)
+
+        for etype, data in events:
+            if etype == "onChat":
+                msg = data.get("onChat", "")
+                if msg.startswith("MATCH_RESULT:"):
+                    item = msg[len("MATCH_RESULT:"):]
+                    return None if item == "null" else item
+
+        return None
 
     def _extract_item_name(self, skill_name: str) -> str:
         """
