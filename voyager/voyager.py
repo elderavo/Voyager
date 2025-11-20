@@ -394,8 +394,10 @@ class Voyager:
 
                 try:
                     info = self.executor_craft(item_name)
+                    # Ensure we have valid last_events
+                    if not self.last_events:
+                        self.last_events = self.env.step("")
                 except Exception as e:
-                    time.sleep(3)  # wait for mineflayer to exit
                     info = {
                         "task": task,
                         "success": False,
@@ -403,16 +405,21 @@ class Voyager:
                     print(f"\033[31m[Executor Mode] Error: {e}\033[0m")
                     import traceback
                     traceback.print_exc()
+                    # Get fresh state after error
+                    try:
+                        self.last_events = self.env.step("")
+                    except Exception:
+                        pass  # If even this fails, we'll handle it in the next iteration
             else:
                 # Use existing Action Agent path
+                # No need to reset env between tasks - we already have fresh state
                 try:
                     messages, reward, done, info = self.rollout(
                         task=task,
                         context=context,
-                        reset_env=reset_env,
+                        reset_env=False,  # State is already fresh from previous task
                     )
                 except Exception as e:
-                    time.sleep(3)  # wait for mineflayer to exit
                     info = {
                         "task": task,
                         "success": False,
@@ -420,6 +427,11 @@ class Voyager:
                     # use red color background to print the error
                     print("Your last round rollout terminated due to error:")
                     print(f"\033[41m{e}\033[0m")
+                    # Get fresh state after error
+                    try:
+                        self.last_events = self.env.step("")
+                    except Exception:
+                        pass  # If even this fails, we'll handle it in the next iteration
 
             # Soft reset between tasks - no need to restart mineflayer server
             # Just get fresh state with a simple step
