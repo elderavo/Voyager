@@ -22,7 +22,7 @@ class VoyagerEnv(gym.Env):
         mc_port=None,
         azure_login=None,
         server_host="http://127.0.0.1",
-        server_port=3000,
+        server_port=3001,
         step_timeout=600,
         log_path="./logs",
     ):
@@ -112,7 +112,11 @@ class VoyagerEnv(gym.Env):
                         raise RuntimeError(
                             f"Minecraft server reply with code {res.status_code}"
                         )
-                    return res.json()
+
+                    # Handle encoding properly - same fix as step()
+                    raw_bytes = res.content
+                    decoded_text = raw_bytes.decode('utf-8', errors='replace')
+                    return json.loads(decoded_text)
                 except (requests.exceptions.ConnectionError, ConnectionResetError):
                     if attempt < max_retries - 1:
                         wait_time = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5, 1, 2, 4 seconds
@@ -140,9 +144,18 @@ class VoyagerEnv(gym.Env):
         )
         if res.status_code != 200:
             raise RuntimeError("Failed to step Minecraft server")
-        returned_data = res.json()
+
+        # Handle encoding properly - decode bytes to UTF-8 first
+        raw_bytes = res.content
+        decoded_text = raw_bytes.decode('utf-8', errors='replace')
+        returned_data = json.loads(decoded_text)
+
         self.pause()
-        return json.loads(returned_data)
+
+        # Handle double-encoded JSON if needed
+        if isinstance(returned_data, str):
+            return json.loads(returned_data)
+        return returned_data
 
     def render(self):
         raise NotImplementedError("render is not implemented")
@@ -180,7 +193,11 @@ class VoyagerEnv(gym.Env):
         # All the reset in step will be soft
         self.reset_options["reset"] = "soft"
         self.pause()
-        return json.loads(returned_data)
+
+        # Handle double-encoded JSON properly
+        if isinstance(returned_data, str):
+            return json.loads(returned_data)
+        return returned_data
 
     def close(self):
         self.unpause()
