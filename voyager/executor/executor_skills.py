@@ -66,25 +66,23 @@ class ExecutorSkills:
         }
 
     def ensure_skill(self, skill_name: str, depth: int = 0, task_type: str = "craft",
-                    actions_executor=None) -> Tuple[bool, List[ExecutionStep]]:
+                     actions_executor=None) -> Tuple[bool, List[ExecutionStep]]:
         """
         Ensure a skill exists, discovering it recursively if needed.
 
-        If the skill exists in the library, returns immediately.
+        If the skill exists in the library, returns immediately as a single skill call.
         If not, attempts to discover it by:
         1. Trying direct execution
         2. Parsing missing dependencies
         3. Recursively ensuring each dependency
         4. Synthesizing and registering the skill
 
-        Args:
-            skill_name: Name of skill to ensure (e.g., "craftSticks")
-            depth: Current recursion depth
-            task_type: Type of task ("craft" or "mine")
-            actions_executor: ExecutorActions instance for executing skills/primitives
-
-        Returns:
-            (success: bool, execution_sequence: List[ExecutionStep])
+        NOTE: This function now enforces a clean separation:
+        - Each skill's own ExecutionSteps contain ONLY:
+          * its local primitives (mineBlock, craftItem)
+          * calls to other skills (step_type == "skill")
+        - Parent callers ONLY record a single "skill" call for this skill,
+          never its internal primitives. This avoids primitive+composite duplication.
         """
         if actions_executor is None:
             raise ValueError("actions_executor is required for ensure_skill")
@@ -99,7 +97,7 @@ class ExecutorSkills:
             print(f"\033[36mSkill '{skill_name}' already exists — testing it\033[0m")
             success, events = actions_executor.execute_skill(skill_name)
 
-            # If old skill still works, use it
+            # If old skill still works, use it as a black-box skill
             if success:
                 return True, [ExecutionStep("skill", skill_name, [], success=True)]
 
@@ -108,10 +106,10 @@ class ExecutorSkills:
 
         print(f"\033[36mDiscovering skill: {skill_name} (depth: {depth})\033[0m")
 
-        # Extract item name from skill name (e.g., "craftSticks" -> "stick")
+        # Extract item name from skill name (e.g., "craftSticks" -> "stick"/"sticks")
         item_name = self.utils.extract_item_name(skill_name)
 
-        # Create discovery task
+        # Create discovery task for THIS skill only
         task = SkillDiscoveryTask(
             skill_name=skill_name,
             item_name=item_name,
@@ -121,14 +119,8 @@ class ExecutorSkills:
         self.task_stack.append(task)
         task.status = "in_progress"
 
-        # Attempt direct execution
-
-
         # ============================================================
         # RECURSIVE MULTI-PASS DEPENDENCY RESOLUTION LOOP
-        # ============================================================
-        # ============================================================
-        # RECURSIVE MULTI-PASS DEPENDENCY RESOLUTION LOOP (FIXED)
         # ============================================================
         while True:
             success, events = actions_executor.direct_execute_craft(item_name)
@@ -139,17 +131,19 @@ class ExecutorSkills:
             if success:
                 print(f"\033[32m✓ Craft succeeded for {item_name}\033[0m")
 
-                # Record step
+                # Record the final craft as a primitive inside THIS skill
                 step = ExecutionStep("primitive", "craftItem", [item_name, "1"], success=True)
                 task.execution_sequence.append(step)
                 task.status = "completed"
 
-                # Synthesize final skill
+                # Synthesize and register the skill using its local sequence
                 self.synthesize_skill(skill_name, task.execution_sequence)
 
-                execution_sequence = task.execution_sequence.copy()
+                # Pop this task off the stack
                 self.task_stack.pop()
-                return True, execution_sequence
+
+                # IMPORTANT: callers treat this as a single skill call, not as its internals
+                return True, [ExecutionStep("skill", skill_name, [], success=True)]
 
             # --------------------------------------------------------
             # Craft FAILED → parse missing dependencies
@@ -173,7 +167,7 @@ class ExecutorSkills:
             for dep in dependencies:
                 dep_success = self.ensure_dependency(
                     dep,
-                    depth,
+                    current_depth=depth,
                     task_type=task_type,
                     actions_executor=actions_executor
                 )
@@ -191,84 +185,21 @@ class ExecutorSkills:
             # After resolving deps, the loop automatically retries
             # --------------------------------------------------------
             print(f"\033[36m[LOOP] Retrying craft for {item_name} after resolving deps...\033[0m")
-            # Do NOT break — loop continues until success or true failure
-
-
-
-
-        if success:
-            # Simple case: worked on first try
-            print(f"\033[32m✓ Direct craft succeeded for {item_name}\033[0m")
-            step = ExecutionStep("primitive", "craftItem", [item_name, "1"], success=True)
-            task.execution_sequence.append(step)
-            task.status = "completed"
-            self.task_stack.pop()
-
-            # Synthesize and save skill
-            self.synthesize_skill(skill_name, task.execution_sequence)
-
-            return True, task.execution_sequence
-
-        # Parse missing dependencies
-        dependencies = self.utils.parse_dependencies(events)
-        task.missing_dependencies = dependencies
-
-        if not dependencies:
-            # Failed but no clear dependencies - can't proceed
-            print(f"\033[31m✗ Failed to craft {item_name} with no clear dependencies\033[0m")
-            task.status = "failed"
-            self.task_stack.pop()
-            return False, []
-
-        print(f"\033[33mMissing dependencies for {item_name}: {dependencies}\033[0m")
-
-        # Recursively ensure each dependency
-        for dep in dependencies:
-            dep_success = self.ensure_dependency(dep, depth, task_type=task_type,
-                                                actions_executor=actions_executor)
-            if not dep_success:
-                print(f"\033[31m✗ Failed to obtain dependency: {dep}\033[0m")
-                task.status = "failed"
-                self.task_stack.pop()
-                return False, []
-
-        # All dependencies satisfied, retry craft
-        print(f"\033[36mRetrying craft for {item_name} after resolving dependencies\033[0m")
-        success, events = actions_executor.direct_execute_craft(item_name)
-
-        if success:
-            print(f"\033[32m✓ Craft succeeded for {item_name} after dependency resolution\033[0m")
-            step = ExecutionStep("primitive", "craftItem", [item_name, "1"], success=True)
-            task.execution_sequence.append(step)
-            task.status = "completed"
-
-            # Synthesize and save the composite skill
-            self.synthesize_skill(skill_name, task.execution_sequence)
-
-            execution_sequence = task.execution_sequence.copy()
-            self.task_stack.pop()
-            return True, execution_sequence
-        else:
-            print(f"\033[31m✗ Craft failed for {item_name} even after dependency resolution\033[0m")
-            task.status = "failed"
-            self.task_stack.pop()
-            return False, []
+            # Do NOT break — the while True will retry with updated world state
 
     def ensure_dependency(self, dep: str, current_depth: int, task_type: str = "craft",
-                         actions_executor=None) -> bool:
+                          actions_executor=None) -> bool:
         """
         Ensure a single dependency is satisfied.
 
         Determines if dependency is gatherable or craftable, then handles accordingly.
 
-        Args:
-            dep: Dependency item name
-            current_depth: Current recursion depth
-            task_type: Type of task ("craft" or "mine")
-            actions_executor: ExecutorActions instance for executing skills/primitives
-
-        Returns:
-            success: bool
+        CRITICAL BEHAVIOR FOR CLEAN SKILLS:
+        - For gatherable primitives → we record a 'mineBlock' primitive
+          in the CURRENT task's execution_sequence.
+        - For craftable dependencies → we ONLY record a single SKILL CALL
+          (ExecutionStep(step_type="skill", name=dep_skill_name, ...)).
+          We NEVER push that sub-skill's internal primitives into the parent.
         """
         if actions_executor is None:
             raise ValueError("actions_executor is required for ensure_dependency")
@@ -283,46 +214,41 @@ class ExecutorSkills:
             print(f"\033[36mGathering primitive: {dep}\033[0m")
             success, events = actions_executor.direct_execute_gather(dep, count=1)
 
-            if success:
-                # Record in current task's execution sequence
-                if self.task_stack:
-                    step = ExecutionStep("primitive", "mineBlock", [dep, "1"], success=True)
-                    self.task_stack[-1].execution_sequence.append(step)
+            if success and self.task_stack:
+                # Record primitive in the CURRENT skill's execution sequence
+                step = ExecutionStep("primitive", "mineBlock", [dep, "1"], success=True)
+                self.task_stack[-1].execution_sequence.append(step)
 
             return success
 
         # Otherwise, it's craftable - check if we have a skill for it
         dep_skill_name = f"craft{self.utils.to_camel_case(dep)}"
 
+        # Known skill — treat it as a black-box skill call
         if dep_skill_name in self.skill_manager.skills:
-            # Known skill - execute it
             print(f"\033[36mExecuting known skill for dependency: {dep_skill_name}\033[0m")
             success, events = actions_executor.execute_skill(dep_skill_name)
 
-            if success:
-                # NEW: After discovering a new skill, treat that skill as a known SKILL call.
-                if dep_skill_name in self.skill_manager.skills:
-                    if self.task_stack:
-                        self.task_stack[-1].execution_sequence.append(
-                            ExecutionStep("skill", dep_skill_name, [], success=True)
-                        )
-                    return True
+            if success and self.task_stack:
+                # Record ONLY the skill call, not its internals
+                step = ExecutionStep("skill", dep_skill_name, [], success=True)
+                self.task_stack[-1].execution_sequence.append(step)
 
-            # Fallback (should rarely happen): append raw sub-steps
-            if self.task_stack:
-                self.task_stack[-1].execution_sequence.extend(sub_steps)
+            return success
 
-            return True
-
-
-        # Unknown skill - recurse!
+        # Unknown skill - recurse to discover it
         print(f"\033[36mRecursively discovering skill for: {dep}\033[0m")
-        success, sub_steps = self.ensure_skill(dep_skill_name, depth=current_depth + 1,
-                                              task_type=task_type, actions_executor=actions_executor)
+        success, _ = self.ensure_skill(
+            dep_skill_name,
+            depth=current_depth + 1,
+            task_type=task_type,
+            actions_executor=actions_executor
+        )
 
         if success and self.task_stack:
-            # Add sub-steps to current task's execution sequence
-            self.task_stack[-1].execution_sequence.extend(sub_steps)
+            # Now that the sub-skill exists, record only a skill call here
+            step = ExecutionStep("skill", dep_skill_name, [], success=True)
+            self.task_stack[-1].execution_sequence.append(step)
 
         return success
 
@@ -333,15 +259,27 @@ class ExecutorSkills:
         Args:
             skill_name: Name for the new skill
             execution_sequence: List of ExecutionStep objects
+
+        NOTE:
+        - execution_sequence is assumed to be CLEAN:
+          it should already contain only:
+            * local primitives (mineBlock / craftItem)
+            * skill calls (step_type == "skill")
+          because ensure_dependency/ensure_skill never push sub-skill primitives
+          into parent skills.
         """
         # Generate JavaScript code
         code_lines = []
         for step in execution_sequence:
             if step.step_type == "primitive":
                 if step.name == "mineBlock":
-                    code_lines.append(f"  await mineBlock(bot, '{step.args[0]}', {step.args[1]});")
+                    code_lines.append(
+                        f"  await mineBlock(bot, '{step.args[0]}', {step.args[1]});"
+                    )
                 elif step.name == "craftItem":
-                    code_lines.append(f"  await craftItem(bot, '{step.args[0]}', {step.args[1]});")
+                    code_lines.append(
+                        f"  await craftItem(bot, '{step.args[0]}', {step.args[1]});"
+                    )
             elif step.step_type == "skill":
                 code_lines.append(f"  await {step.name}(bot);")
 

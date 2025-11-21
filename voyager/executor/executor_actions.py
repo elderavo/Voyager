@@ -72,18 +72,18 @@ class ExecutorActions:
         if success:
             return True, events
 
-        # ---- Check for missing crafting table ----
-        if self.utils.is_missing_crafting_table_error(events):
-            print("[CT] Missing table → placing one if we have it")
-            self.direct_place_item("crafting_table")
+        # # ---- Check for missing crafting table ----
+        # if self.utils.is_missing_crafting_table_error(events):
+        #     print("[CT] Missing table → placing one if we have it")
+        #     self.direct_place_item("crafting_table")
 
-            # ---- RETRY CRAFT ----
-            retry_events = self.env.step(code=code, programs=self.skill_manager.programs)
-            retry_success = self.utils.check_execution_success(retry_events)
+        #     # ---- RETRY CRAFT ----
+        #     retry_events = self.env.step(code=code, programs=self.skill_manager.programs)
+        #     retry_success = self.utils.check_execution_success(retry_events)
 
-            # Merge event streams if you want full trace
-            combined = events + retry_events
-            return retry_success, combined
+        #     # Merge event streams if you want full trace
+        #     combined = events + retry_events
+        #     return retry_success, combined
 
         # ---- Not a crafting-table-related failure ----
         return False, events

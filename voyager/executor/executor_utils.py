@@ -263,7 +263,7 @@ class ExecutorUtils:
         pattern = r"I cannot make .+ because I need: (.*)"
 
         print(f"\033[36m[DEBUG] Parsing dependencies from {len(events)} events\033[0m")
-
+        # TODO: NEED TO IMPLEMENT QUANTITY-BASED DEPENDENCIES
         for event_type, event in events:
             print(f"\033[36m[DEBUG] Event type: {event_type}\033[0m")
             if event_type == "onChat":
@@ -287,7 +287,7 @@ class ExecutorUtils:
 
                 # Check for "No crafting table nearby" error
                 if "No crafting table nearby" in error_msg or "no crafting table nearby" in error_msg:
-                    dependencies.append("crafting_table")
+                    #dependencies.append("crafting_table")
                     print(f"\033[36m[DEBUG] Detected missing crafting_table from error\033[0m")
 
         print(f"\033[36m[DEBUG] Final dependencies list: {dependencies}\033[0m")
