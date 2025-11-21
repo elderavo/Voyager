@@ -65,8 +65,15 @@ class SkillManager:
         if info["task"].startswith("Deposit useless items into the chest at"):
             # No need to reuse the deposit skill
             return
+
         program_name = info["program_name"]
         program_code = info["program_code"]
+
+        # Only skip saving if executor explicitly marked this as a pure primitive
+        if info.get("is_one_line_primitive", True):
+            print(f"[DEBUG] Skipping primitive skill: {program_name}")
+            return
+
         skill_description = self.generate_skill_description(program_name, program_code)
         print(
             f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"

@@ -8,5 +8,16 @@ This module provides an alternative execution path that:
 """
 
 from .executor import Executor
+from .executor_skills import ExecutionStep, SkillDiscoveryTask
+from .executor_utils import ExecutorUtils
+from .executor_actions import ExecutorActions
+from .executor_skills import ExecutorSkills
 
-__all__ = ["Executor"]
+__all__ = [
+    "Executor",
+    "ExecutionStep",
+    "SkillDiscoveryTask",
+    "ExecutorUtils",
+    "ExecutorActions",
+    "ExecutorSkills",
+]

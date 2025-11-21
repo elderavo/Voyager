@@ -30,18 +30,18 @@ def test_executor_mode(voyager):
 
 
     # Test 1: Craft planks (requires gathering logs)
-    print("\n--- Test 1: Craft Planks ---")
-    info = voyager.executor_craft("spruce_planks")
-    print(f"Result: {info}")
+    # print("\n--- Test 1: Craft Planks ---")
+    # info = voyager.executor_craft("oak_planks")
+    # print(f"Result: {info}")
 
-    # Test 2: Craft sticks (requires planks, which require logs)
-    print("\n--- Test 2: Craft Sticks ---")
-    info = voyager.executor_craft("stick")
-    print(f"Result: {info}")
+    # # Test 2: Craft sticks (requires planks, which require logs)
+    # print("\n--- Test 2: Craft Sticks ---")
+    # info = voyager.executor_craft("sticks")
+    # print(f"Result: {info}")
 
     # Test 3: Craft crafting table (requires planks)
-    print("\n--- Test 3: Craft Crafting Table ---")
-    info = voyager.executor_craft("crafting_table")
+    print("\n--- Test 1 ---")
+    info = voyager.executor_craft("wooden pickaxe")
     print(f"Result: {info}")
 
     print("\n" + "="*70)

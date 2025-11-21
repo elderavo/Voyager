@@ -310,7 +310,7 @@ app.post("/step", async (req, res) => {
     }
 
     function returnItems() {
-        bot.chat("/gamerule doTileDrops false");
+        //bot.chat("/gamerule doTileDrops false");
         const crafting_table = bot.findBlock({
             matching: mcData.blocksByName.crafting_table.id,
             maxDistance: 128,
@@ -344,7 +344,7 @@ app.post("/step", async (req, res) => {
         ) {
             bot.chat("/give @s iron_pickaxe");
         }
-        bot.chat("/gamerule doTileDrops true");
+        // bot.chat("/gamerule doTileDrops true");
     }
 
     function handleError(err) {

@@ -248,10 +248,10 @@ class CurriculumAgent:
         return HumanMessage(content=content)
 
     def propose_next_task(self, *, events, chest_observation, max_retries=5):
-        if self.progress == 0 and self.mode == "auto":
-            task = "Mine 1 wood log"
-            context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
-            return task, context
+        # if self.progress == 0 and self.mode == "auto":
+        #     task = "Mine 1 oak log"
+        #     context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
+        #     return task, context
 
         # hard code task when inventory is almost full
         inventoryUsed = events[-1][1]["status"]["inventoryUsed"]
