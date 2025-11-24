@@ -27,6 +27,7 @@ class ExecutorUtils:
         self.skill_manager = skill_manager
         self._available_items_cache = None
 
+
     def get_available_items(self) -> List[str]:
         """
         Get list of all available item names from Mineflayer mcData.
@@ -313,10 +314,6 @@ class ExecutorUtils:
             print(f"\033[36m[DEBUG] Checking event type: {event_type}\033[0m")
             if event_type == "onError":
                 error_msg = event.get("onError", "")
-                # Don't treat "No crafting table nearby" as a hard failure since we handle it as dependency
-                if "No crafting table nearby" in error_msg or "no crafting table nearby" in error_msg:
-                    print(f"\033[33m[DEBUG] Found recoverable error (missing crafting table), returning False\033[0m")
-                    return False
                 print(f"\033[31m[DEBUG] Found error event, returning False: {error_msg}\033[0m")
                 return False
             if event_type == "onChat":
@@ -328,42 +325,11 @@ class ExecutorUtils:
                     print(f"\033[31m[DEBUG] Chat indicates failure, returning False\033[0m")
                     return False
                 # Check for success indicators
-                if any(x in message for x in ["[craft:done]", "i did the recipe", "mined", "collect finish"]):
+                if any(x in message for x in ["[craft:done]", "i did the recipe", "mined",]):
                     print(f"\033[32m[DEBUG] Chat indicates success, returning True\033[0m")
                     return True
 
         # Default to success if no errors
         print(f"\033[33m[DEBUG] No explicit success/failure indicators, defaulting to True\033[0m")
         return True
-
-    def is_missing_crafting_table_error(self, events) -> bool:
-        """
-        Detect the specific failure mode where craftItem.js indicates
-        a missing crafting table.
-
-        This matches both:
-        - chat messages from craftItem.js
-        - thrown JS errors passed back through env.step()
-
-        Returns True ONLY for the missing-table condition.
-        """
-
-        for etype, payload in events:
-            # ---- Chat messages emitted by craftItem.js ----
-            if etype == "onChat":
-                msg = payload.get("onChat", "").lower()
-                if "craft without a crafting table" in msg:
-                    return True
-                if "no crafting table nearby" in msg:
-                    return True
-
-            # ---- JS errors sent through onError events ----
-            if etype == "onError":
-                msg = payload.get("onError", "").lower()
-                if "no crafting table nearby" in msg:
-                    return True
-                if "craft without a crafting table" in msg:
-                    return True
-
-        return False
 

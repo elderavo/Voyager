@@ -56,38 +56,10 @@ class ExecutorActions:
 
         return success, events
 
-    def direct_execute_craft(self, item_name: str) -> Tuple[bool, List[Any]]:
-        """
-        Directly execute craftItem primitive.
-        If missing-crafting-table error occurs, place a table if possible,
-        then retry once. Otherwise return result normally.
-        """
-
+    def direct_execute_craft(self, item_name: str):
         code = f"await craftItem(bot, '{item_name}', 1);"
-
-        # ---- FIRST ATTEMPT ----
-        events = self.env.step(code=code, programs=self.skill_manager.programs)
-        success = self.utils.check_execution_success(events)
-
-        if success:
-            return True, events
-
-        # # ---- Check for missing crafting table ----
-        # if self.utils.is_missing_crafting_table_error(events):
-        #     print("[CT] Missing table → placing one if we have it")
-        #     self.direct_place_item("crafting_table")
-
-        #     # ---- RETRY CRAFT ----
-        #     retry_events = self.env.step(code=code, programs=self.skill_manager.programs)
-        #     retry_success = self.utils.check_execution_success(retry_events)
-
-        #     # Merge event streams if you want full trace
-        #     combined = events + retry_events
-        #     return retry_success, combined
-
-        # ---- Not a crafting-table-related failure ----
-        return False, events
-
+        events = self.env.step(code, programs=self.skill_manager.programs)
+        return self.utils.check_execution_success(events), events
 
     def direct_execute_gather(self, item_name: str, count: int = 1) -> Tuple[bool, List[Any]]:
         """

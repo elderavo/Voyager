@@ -1,97 +1,213 @@
 // ==========================
-//  craftItem.js (rewritten)
+//  craftItem.js (final)
 // ==========================
 //
-// This version strictly follows the Mineflayer API defined in api.md
-// and properly distinguishes between 2x2 and 3x3 (crafting table) recipes.
-// It avoids all the mis-detection issues and ghost crafting behavior
-// caused by using incorrect recipeFor signatures or incorrect craftingTable
-// block resolution.
+// - Handles crafting table detection (and placement if in inventory)
+// - Uses Mineflayer recipesFor / recipesAll correctly
+// - Emits Voyager-style dependency messages from recipe.delta
+// - Designed to run inside index.js /step scope where mcData, placeItem, etc. exist
 //
 
-const Item = require('prismarine-item');
-
 /**
- * Craft an item using the correct 2x2 or 3x3 recipe logic.
- *
- * @param {Bot} bot - Mineflayer bot instance
- * @param {string} itemName - mcData item name (e.g., "oak_planks")
- * @param {number} count - number of items to craft
+ * Compute missing ingredients for a given recipe using recipe.delta.
+ * Negative counts are consumed; positive are produced.
  */
-async function craftItem(bot, itemName, count = 1) {
-  const mcData = bot.registry;
+function computeMissingIngredients(bot, recipe) {
+    const missing = [];
 
-  // --- Lookup item ---
-  const itemByName = mcData.itemsByName[itemName];
-  if (!itemByName) {
-    bot.chat(`craftItem: Unknown item '${itemName}'`);
-    throw new Error(`Unknown item: ${itemName}`);
-  }
-
-  const itemId = itemByName.id;
-
-  // ====================================================================
-  // 1. Try 2x2 inventory recipes first (craftingTable = null).
-  //    Mineflayer semantics:
-  //
-  //      bot.recipesFor(itemType, metadata=null, minCount, craftingTable=null)
-  //
-  //    → Searches ONLY inventory (2×2) crafts.
-  //
-  // ====================================================================
-
-  let recipes = bot.recipesFor(itemId, null, count, null);
-
-  if (recipes.length > 0) {
-    // Found an inventory recipe.
-    try {
-      await bot.craft(recipes[0], count, null);
-      bot.chat(`crafted ${count} ${itemName} (2x2)`);
-      return;
-    } catch (err) {
-      bot.chat(`craftItem: 2x2 craft failed for ${itemName}: ${err.message}`);
-      throw err;
+    for (const deltaItem of recipe.delta) {
+        if (deltaItem.count < 0) {
+            const itemName = mcData.items[deltaItem.id].name;
+            const invItem = bot.inventory.findInventoryItem(itemName, null);
+            const have = invItem ? invItem.count : 0;
+            const need = -deltaItem.count;
+            if (have < need) {
+                missing.push({
+                    name: itemName,
+                    needed: need - have,
+                });
+            }
+        }
     }
-  }
 
-  // ====================================================================
-  // 2. No 2x2 recipes found → Look for a nearby crafting table block.
-  // ====================================================================
-
-  const craftingTableId = mcData.blocksByName.crafting_table.id;
-
-  // Find a table within 4 blocks of the bot.
-  let craftingTable = bot.findBlock({
-    matching: craftingTableId,
-    maxDistance: 4
-  });
-
-  // If not found, fail meaningfully. The caller (executor) should decide
-  // whether to place a table, craft one, or handle missing dependency.
-  if (!craftingTable) {
-    bot.chat(`craftItem: No crafting table nearby for '${itemName}'`);
-    throw new Error("No crafting table nearby");
-  }
-
-  // ====================================================================
-  // 3. Try crafting table (3×3) recipes.
-  // ====================================================================
-
-  recipes = bot.recipesFor(itemId, null, count, craftingTable);
-
-  if (recipes.length === 0) {
-    bot.chat(`craftItem: No crafting-table recipe for '${itemName}'`);
-    throw new Error(`Recipe not found for ${itemName}`);
-  }
-
-  try {
-    await bot.craft(recipes[0], count, craftingTable);
-    bot.chat(`crafted ${count} ${itemName} (3x3)`);
-    return;
-  } catch (err) {
-    bot.chat(`craftItem: 3x3 craft failed for ${itemName}: ${err.message}`);
-    throw err;
-  }
+    return missing;
 }
 
+/**
+ * Pick the recipe that is "closest" to craftable:
+ * the one with the smallest total missing ingredient count.
+ */
+function pickBestRecipe(bot, recipes) {
+    if (!recipes || recipes.length === 0) return null;
+
+    let best = null;
+    let bestScore = Infinity;
+
+    for (const r of recipes) {
+        const missing = computeMissingIngredients(bot, r);
+        const score = missing.reduce((acc, m) => acc + m.needed, 0);
+        if (score < bestScore) {
+            bestScore = score;
+            best = r;
+        }
+    }
+
+    return best;
+}
+
+/**
+ * Emit Voyager-style dependency feedback:
+ * "I cannot make <name> because I need: 3 more oak_planks, 2 more stick"
+ */
+function emitDependencyFeedback(bot, itemName, missingList) {
+    if (!missingList || missingList.length === 0) return;
+
+    const parts = missingList.map((m) => `${m.needed} more ${m.name}`);
+    const msg = `I cannot make ${itemName} because I need: ${parts.join(", ")}`;
+    bot.chat(msg);
+}
+
+/**
+ * Find an existing crafting table near the bot, with retries to allow
+ * world state to update after placement.
+ */
+async function findNearbyCraftingTable(bot, maxDistance = 32, attempts = 3, ticksBetween = 3) {
+    const craftingTableId = mcData.blocksByName.crafting_table.id;
+    
+    for (let i = 0; i < attempts; i++) {
+        const table = bot.findBlock({
+            matching: craftingTableId,
+            maxDistance,
+        });
+        if (table) return table;
+        await bot.waitForTicks(ticksBetween);
+    }
+    return null;
+}
+
+/**
+ * Ensure there is a crafting table block near the bot.
+ * If none is found but the bot has a crafting_table item in inventory,
+ * place one adjacent using placeItem, wait, then re-scan.
+ *
+ * If still none is found, throws "No crafting table nearby".
+ */
+async function ensureCraftingTable(bot, itemName) {
+    // First, try to find an existing table
+    let table = await findNearbyCraftingTable(bot, 32, 3, 3);
+
+    if (table) {
+        await bot.pathfinder.goto(new (require('mineflayer-pathfinder').goals.GoalNear)(table.position.x, table.position.y, table.position.z, 1));
+    return table;
+    }
+    // No table found; see if we can place one from inventory
+    const ctItemDef = mcData.itemsByName["crafting_table"];
+    if (!ctItemDef) {
+        bot.chat(`craftItem: crafting_table item definition missing in mcData`);
+        throw new Error("No crafting table nearby");
+    }
+
+    const invCt = bot.inventory.findInventoryItem(ctItemDef.id);
+    if (!invCt) {
+        // No crafting table block and no item to place one
+        bot.chat(`craftItem: No crafting table nearby for '${itemName}'`);
+        throw new Error("No crafting table nearby");
+    }
+
+    // We have a crafting_table item → place it beside the bot
+    const placePos = bot.entity.position.offset(1, 0, 0).floored();
+    bot.chat(`[CT] Placing crafting table at ${placePos}`);
+    await placeItem(bot, "crafting_table", placePos);
+    await bot.waitForTicks(5);
+
+    // Re-scan for the table now that it should be placed
+    table = await findNearbyCraftingTable(bot, 6, 3, 3);
+    if (!table) {
+        bot.chat(`[CT:FAIL] Could not locate crafting table after placement for '${itemName}'`);
+        throw new Error("No crafting table nearby (after placement)");
+    }
+
+    bot.chat("[CT] Crafting table ready");
+    return table;
+}
+
+/**
+ * Main crafting primitive.
+ *
+ * - Validates item name and count
+ * - Ensures a crafting table block is near the bot (placing one if necessary)
+ * - Uses recipesFor to find actually craftable recipes
+ * - Uses recipesAll + recipe.delta to compute missing dependencies
+ * - Emits Voyager-style dependency chat and throws on failure
+ */
+async function craftItem(bot, itemName, count = 1) {
+    // Argument checks
+    if (typeof itemName !== "string") {
+        throw new Error("name for craftItem must be a string");
+    }
+    if (typeof count !== "number") {
+        throw new Error("count for craftItem must be a number");
+    }
+
+    const itemDef = mcData.itemsByName[itemName];
+    if (!itemDef) {
+        bot.chat(`craftItem: Unknown item '${itemName}'`);
+        throw new Error(`No item named ${itemName}`);
+    }
+    const itemId = itemDef.id;
+
+    // Ensure we have a crafting table block (or place one from inventory)
+    const craftingTable = await ensureCraftingTable(bot, itemName);
+
+    // First try: recipes that are actually craftable with current inventory
+    let recipes = bot.recipesFor(itemId, null, count, craftingTable);
+
+    if (recipes.length > 0) {
+        const recipe = recipes[0];
+        try {
+            await bot.craft(recipe, count, craftingTable);
+            bot.chat(`[craft:done] crafted ${count} ${itemName}`);
+            return;
+        } catch (err) {
+            bot.chat(`[craft:fail] Could not craft ${itemName}: ${err.message}`);
+            throw err;
+        }
+    }
+
+    // No craftable recipe with current inventory.
+    // Now ask for ALL recipes and compute which ingredients are missing.
+    const allRecipes = bot.recipesAll(itemId, null, craftingTable);
+
+    if (!allRecipes || allRecipes.length === 0) {
+        // There truly is no crafting-table recipe for this item
+        bot.chat(`craftItem: No crafting-table recipe for '${itemName}'`);
+        throw new Error(`Recipe not found for ${itemName}`);
+    }
+
+    const bestRecipe = pickBestRecipe(bot, allRecipes);
+    if (!bestRecipe) {
+        bot.chat(`craftItem: No usable recipe candidate for '${itemName}'`);
+        throw new Error(`Recipe not found for ${itemName}`);
+    }
+
+    const missing = computeMissingIngredients(bot, bestRecipe);
+
+    if (missing.length > 0) {
+        // Emit dependency line that Python parses into dependencies
+        emitDependencyFeedback(bot, itemName, missing);
+        throw new Error(`Missing ingredients for ${itemName}`);
+    }
+
+    // Edge case: recipesFor was empty but delta says we're not missing anything.
+    // Try to craft anyway just in case Mineflayer had a minCount quirk.
+    try {
+        await bot.craft(bestRecipe, count, craftingTable);
+        bot.chat(`[craft:done] crafted ${count} ${itemName}`);
+    } catch (err) {
+        bot.chat(`[craft:fail] Could not craft ${itemName}: ${err.message}`);
+        throw err;
+    }
+}
+
+// Optional CommonJS export for environments that require it.
 module.exports = { craftItem };

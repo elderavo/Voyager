@@ -66,7 +66,9 @@ class Executor:
         Returns:
             (success: bool, events: List)
         """
-        return self.actions.execute_skill(skill_name)
+        success, events = self.actions.execute_skill(skill_name)
+
+        return success, events
 
     def ensure_skill(self, skill_name: str, depth: int = 0, task_type: str = "craft") -> Tuple[bool, List[ExecutionStep]]:
         """
@@ -89,12 +91,21 @@ class Executor:
         """
         return self.skills.ensure_skill(skill_name, depth, task_type, actions_executor=self.actions)
 
-    def craft_item(self, item_name: str, task_type: str = "craft") -> Tuple[bool, List[Any], str]:
+    def craft_item(self, item_name: str, task_type: str = "craft"):
         """
         High-level helper to craft an item WITH QUANTITY SUPPORT.
-        Always returns (success, events, normalized_name).
         """
 
+        # --- Place crafting table ---
+        # place_code = (
+        #     "const pos = bot.entity.position.offset(1, 0, 0);"
+        #     "await placeItem(bot, 'crafting_table', pos);"
+        #     "await bot.waitForTicks(5);"
+        #     "await bot.chat('I placed a crafting table')"
+        # )
+        # self.env.step(place_code, programs=self.skill_manager.programs)
+
+    #try:
         # =========================
         # 1. Extract quantity
         # =========================
@@ -107,29 +118,23 @@ class Executor:
         # =========================
         normalized = self.utils.normalize_item_name(item_name)
 
-        # Case A: direct match
         if isinstance(normalized, str):
             normalized_name = normalized
-
-        # Case B: suggestion available → auto-accept suggestion
         elif isinstance(normalized, dict) and normalized.get("suggestions"):
             suggestion = normalized["suggestions"][0]
             print(f"[DEBUG] Normalizing '{item_name}' → '{suggestion}' (auto-correct)")
             normalized_name = suggestion
-
-        # Case C: neither match nor suggestions
         else:
             print(f"[DEBUG] Could not normalize '{item_name}' → no usable match")
             return False, [], ""
 
         # =========================
         # 3. Build skill name
-        # (skill ALWAYS crafts exactly 1 unit)
         # =========================
         skill_name = f"craft{self.utils.to_camel_case(normalized_name)}"
 
         # =========================
-        # 4. Ensure 1-unit skill exists
+        # 4. Ensure skill exists
         # =========================
         skill_ok, _ = self.ensure_skill(skill_name, depth=0, task_type=task_type)
         if not skill_ok:
@@ -137,45 +142,25 @@ class Executor:
             return False, [], normalized_name
 
         # =========================
-        # 5. Quantity execution logic
+        # 5. Craft quantity
         # =========================
         all_events = []
         for i in range(quantity):
             success, events = self.execute_skill(skill_name)
             all_events.extend(events)
             if not success:
-                # Check if failure was due to missing dependencies
                 dependencies = self.utils.parse_dependencies(events)
                 if dependencies:
-                    print(f"\033[33m[DEBUG] Batch craft {i+1}/{quantity} failed due to missing: {dependencies}\033[0m")
-                    # Try to ensure each dependency
-                    all_deps_satisfied = True
-                    for dep in dependencies:
-                        dep_success = self.skills.ensure_dependency(
-                            dep, depth=0, task_type=task_type, actions_executor=self.actions
-                        )
-                        if not dep_success:
-                            print(f"\033[31m✗ Failed to obtain dependency: {dep}\033[0m")
-                            all_deps_satisfied = False
-                            break
-
-                    if all_deps_satisfied:
-                        # Retry the craft after getting dependencies
-                        print(f"\033[36m[DEBUG] Retrying batch craft {i+1}/{quantity} after getting dependencies\033[0m")
-                        success, events = self.execute_skill(skill_name)
-                        all_events.extend(events)
-                        if not success:
-                            print(f"[DEBUG] Failed at batch craft {i+1}/{quantity} even after getting dependencies")
-                            return False, all_events, normalized_name
-                    else:
-                        print(f"[DEBUG] Failed at batch craft {i+1}/{quantity} - couldn't get dependencies")
-                        return False, all_events, normalized_name
+                    ...
                 else:
-                    # Failed without clear dependencies
-                    print(f"[DEBUG] Failed at batch craft {i+1}/{quantity} - no clear dependencies")
                     return False, all_events, normalized_name
 
         return True, all_events, normalized_name
+
+        # finally:
+        #     # --- ALWAYS pick up crafting table ---
+        #     pickup_code = "await mineBlock(bot, 'crafting_table', 1);"
+        #     self.env.step(pickup_code, programs=self.skill_manager.programs)
 
     def direct_mine(self, item_name: str, count: int = 1, task_type: str = "mine") -> Tuple[bool, List[Any]]:
         """
