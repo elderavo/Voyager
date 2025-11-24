@@ -84,6 +84,8 @@ class ExecutorSkills:
         - Parent callers ONLY record a single "skill" call for this skill,
           never its internal primitives. This avoids primitive+composite duplication.
         """
+        # TODO: The second to last and last craft calls are redundant. Ex: 
+        
         if actions_executor is None:
             raise ValueError("actions_executor is required for ensure_skill")
 
@@ -120,9 +122,12 @@ class ExecutorSkills:
         task.status = "in_progress"
 
         # ============================================================
-        # RECURSIVE MULTI-PASS DEPENDENCY RESOLUTION LOOP
+        # PATCH 4: LIMITED DEPENDENCY RESOLUTION LOOP
+        # Try craft → if fail, resolve deps → retry ONCE → exit
         # ============================================================
-        while True:
+        MAX_RETRIES = 5  # Reasonable limit to prevent infinite loops
+
+        for attempt in range(MAX_RETRIES):
             success, events = actions_executor.direct_execute_craft(item_name)
 
             # --------------------------------------------------------
@@ -182,10 +187,15 @@ class ExecutorSkills:
                 return False, []
 
             # --------------------------------------------------------
-            # After resolving deps, the loop automatically retries
+            # After resolving deps, retry on next iteration
             # --------------------------------------------------------
-            print(f"\033[36m[LOOP] Retrying craft for {item_name} after resolving deps...\033[0m")
-            # Do NOT break — the while True will retry with updated world state
+            print(f"\033[36m[LOOP] Retrying craft for {item_name} (attempt {attempt + 2}/{MAX_RETRIES})...\033[0m")
+
+        # Exhausted all retries
+        print(f"\033[31m✗ Failed to craft {item_name} after {MAX_RETRIES} attempts\033[0m")
+        task.status = "failed"
+        self.task_stack.pop()
+        return False, []
 
     def ensure_dependency(self, dep: str, current_depth: int, task_type: str = "craft",
                           actions_executor=None) -> bool:
@@ -268,6 +278,11 @@ class ExecutorSkills:
           because ensure_dependency/ensure_skill never push sub-skill primitives
           into parent skills.
         """
+        # PATCH 2: Idempotent registration - skip if skill already exists
+        if skill_name in self.skill_manager.skills:
+            print(f"\033[33mSkill {skill_name} already registered, skipping synthesis\033[0m")
+            return
+
         # Generate JavaScript code
         code_lines = []
         for step in execution_sequence:

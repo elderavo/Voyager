@@ -94,18 +94,13 @@ class Executor:
     def craft_item(self, item_name: str, task_type: str = "craft"):
         """
         High-level helper to craft an item WITH QUANTITY SUPPORT.
+
+        PATCH 1 & 4:
+        - ensure_skill() already crafts the item during discovery
+        - For quantity=1, we just return success after ensure_skill
+        - For quantity>1, we execute the skill (quantity-1) more times
+        - No program_code in return value to avoid re-execution loops
         """
-
-        # --- Place crafting table ---
-        # place_code = (
-        #     "const pos = bot.entity.position.offset(1, 0, 0);"
-        #     "await placeItem(bot, 'crafting_table', pos);"
-        #     "await bot.waitForTicks(5);"
-        #     "await bot.chat('I placed a crafting table')"
-        # )
-        # self.env.step(place_code, programs=self.skill_manager.programs)
-
-    #try:
         # =========================
         # 1. Extract quantity
         # =========================
@@ -134,7 +129,7 @@ class Executor:
         skill_name = f"craft{self.utils.to_camel_case(normalized_name)}"
 
         # =========================
-        # 4. Ensure skill exists
+        # 4. Ensure skill exists (this ALREADY crafts the item once!)
         # =========================
         skill_ok, _ = self.ensure_skill(skill_name, depth=0, task_type=task_type)
         if not skill_ok:
@@ -142,25 +137,22 @@ class Executor:
             return False, [], normalized_name
 
         # =========================
-        # 5. Craft quantity
+        # 5. SUCCESS: Item was already crafted during ensure_skill
+        #    For quantity > 1, craft additional copies
         # =========================
         all_events = []
-        for i in range(quantity):
+
+        # ensure_skill already crafted 1, so we only need (quantity - 1) more
+        for i in range(quantity - 1):
+            print(f"\033[36m[QUANTITY] Crafting additional copy {i+2}/{quantity}\033[0m")
             success, events = self.execute_skill(skill_name)
             all_events.extend(events)
             if not success:
-                dependencies = self.utils.parse_dependencies(events)
-                if dependencies:
-                    ...
-                else:
-                    return False, all_events, normalized_name
+                print(f"\033[31m[QUANTITY] Failed at copy {i+2}/{quantity}\033[0m")
+                return False, all_events, normalized_name
 
+        # PATCH 1: Return success WITHOUT program_code to prevent re-execution
         return True, all_events, normalized_name
-
-        # finally:
-        #     # --- ALWAYS pick up crafting table ---
-        #     pickup_code = "await mineBlock(bot, 'crafting_table', 1);"
-        #     self.env.step(pickup_code, programs=self.skill_manager.programs)
 
     def direct_mine(self, item_name: str, count: int = 1, task_type: str = "mine") -> Tuple[bool, List[Any]]:
         """

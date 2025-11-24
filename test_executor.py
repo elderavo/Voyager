@@ -37,26 +37,14 @@ def test_executor_mode(voyager):
  
 
     # Test 3: Craft crafting table (requires planks)
-    print("\n--- Test 1 ---")
-    
-    info = voyager.executor_craft("Oak planks")
-    print(f"Result: {info}")
 
-   # Test 2: Craft sticks (requires planks, which require logs)
-    print("\n--- Test 2: Craft Slab ---")
-    info = voyager.executor_craft("oak slab")
-    print(f"Result: {info}")
-    
-    
-    print("\n--- Test 3: Craft Slab Again -- Does it update dependency? ---")
-    info = voyager.executor_craft("oak slab")
-    print(f"Result: {info}")
-
-    print("\n--- Test 3: Wood Pick ---")
+    print("\n--- Test 1: Wood Pick ---")
     info = voyager.executor_craft("wooden pickaxe")
     print(f"Result: {info}")
-
-    print(info)
+    
+    print("\n--- Test 1,2: Wood Pick again ---")
+    info = voyager.executor_craft("wooden pickaxe")
+    print(f"Result: {info}")
 
     print("\n" + "="*70)
     print("EXECUTOR MODE TESTS COMPLETE")

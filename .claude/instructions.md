@@ -1,289 +1,172 @@
-# ✅ **SUMMARY OF REQUIRED CHANGES**
+# ✅ **PATCH 1 — executor_craft(): EXIT AFTER SUCCESS + STOP RETURNING program_code**
 
-You must implement **four modifications** across the Voyager+Executor stack:
-
-1. **Tag tasks as “mine” or “craft” inside voyager.py**
-2. **Propagate this task_type into the Executor (craft_item / ensure_skill / _ensure_dependency)**
-3. **Prevent mining tasks from invoking crafting logic**
-4. **Prevent mining tasks from being saved as skills**
-
-Each modification is listed in exact order below.
-
----
-
-# 🟦 **FILE 1 — voyager.py**
-
-**Path:** `voyager.py`
-
-## **Step 1 — Add task_type detection before calling executor or skills**
-
-Find the section in `voyager.py` where tasks are executed:
-
-Search for:
-
-```python
-if use_executor and task.lower().startswith("craft "):
-```
-
-Modify it to classify task type:
-
-```python
-if task.lower().startswith("craft"):
-    task_type = "craft"
-elif task.lower().startswith("mine"):
-    task_type = "mine"
-else:
-    task_type = "unknown"
-```
-
-Then pass this into the executor calls:
-
-### For crafting tasks:
-
-Replace:
-
-```python
-success, events, normalized_name = self.executor.craft_item(item_name)
-```
-
-with:
-
-```python
-success, events, normalized_name = self.executor.craft_item(item_name, task_type="craft")
-```
-
-### For mining tasks:
-
-Wherever you call a mining skill or LLM-generated mining function, modify to:
-
-```python
-success, events = self.executor.direct_mine(block_type, count, task_type="mine")
-```
-
-(You will add direct_mine in the Executor below.)
-
----
-
-# 🟦 **FILE 2 — executor.py**
-
-**Path:** `executor.py`
-
-You must modify **three** methods:
-
-* `craft_item`
-* `ensure_skill`
-* `_ensure_dependency`
-
-And add **one new primitive**: `_direct_execute_mine`
-
----
-
-## **Step 2 — Modify craft_item signature to accept task_type**
-
-### Find:
-
-```python
-def craft_item(self, item_name: str) -> Tuple[bool, List[Any], str]:
-```
-
-### Change to:
-
-```python
-def craft_item(self, item_name: str, task_type="craft") -> Tuple[bool, List[Any], str]:
-```
-
-Then pass task_type to ensure_skill:
-
-Replace:
-
-```python
-success, _ = self.ensure_skill(skill_name, depth=0)
-```
-
-with:
-
-```python
-success, _ = self.ensure_skill(skill_name, depth=0, task_type=task_type)
+```diff
+--- a/voyager/executor/executor.py
++++ b/voyager/executor/executor.py
+@@ def executor_craft(self, item_name: str):
+-        # === SUCCESS CASE (OLD) ===
+-        if success:
+-            print(f"✓ Craft succeeded for {item_name}")
+-
+-            # synthesize and register skill
+-            skill_code = self.synthesize_skill(skill_name, steps)
+-            self.skill_manager.register_skill(skill_name, skill_code)
+-
+-            return {
+-                "task": f"Craft {item_name}",
+-                "success": True,
+-                "executor_mode": True,
+-                "program_name": skill_name,
+-                "program_code": skill_code,
+-            }
++        # === SUCCESS CASE (NEW — TERMINATE LOOP, DO NOT RETURN program_code) ===
++        if success:
++            print(f"✓ Craft succeeded for {item_name}")
++
++            if not self.skill_manager.has_skill(skill_name):
++                skill_code = self.synthesize_skill(skill_name, steps)
++                self.skill_manager.register_skill(skill_name, skill_code)
++
++            # Hard-exit the executor. No more crafting, no re-execution.
++            return {
++                "task": f"Craft {item_name}",
++                "success": True,
++                "executor_mode": True,
++            }
 ```
 
 ---
 
-## **Step 3 — Modify ensure_skill signature to accept task_type**
+# ✅ **PATCH 2 — Skill Manager: Make registration idempotent**
 
-### Find:
-
-```python
-def ensure_skill(self, skill_name: str, depth: int = 0) -> Tuple[bool, List[ExecutionStep]]:
-```
-
-### Change to:
-
-```python
-def ensure_skill(self, skill_name: str, depth: int = 0, task_type="craft") -> Tuple[bool, List[ExecutionStep]]:
-```
-
-Now modify the section that checks if skill already exists:
-
-### Replace this:
-
-```python
-if skill_name in self.skill_manager.skills:
-    print(f"Skill '{skill_name}' already exists")
-    return True, [ExecutionStep("skill", skill_name, [], success=True)]
-```
-
-### With this:
-
-```python
-if skill_name in self.skill_manager.skills:
-    print(f"Skill '{skill_name}' already exists — testing it")
-    success, events = self.execute_skill(skill_name)
-    if success:
-        return True, [ExecutionStep("skill", skill_name, [], success=True)]
-
-    print(f"Skill '{skill_name}' is outdated — re-discovering")
-    # FALL THROUGH to dependency discovery
-```
-
-Critically: now add task_type to dependency resolution:
-
-Find:
-
-```python
-dep_success = self._ensure_dependency(dep, depth)
-```
-
-Replace with:
-
-```python
-dep_success = self._ensure_dependency(dep, depth, task_type=task_type)
+```diff
+--- a/voyager/executor/skill_manager.py
++++ b/voyager/executor/skill_manager.py
+@@ class SkillManager:
+     def register_skill(self, name: str, code: str):
+-        self.programs[name] = code
+-        print(f"✓ Registered skill: {name}")
++        # prevent duplicate registration spam
++        if name in self.programs:
++            return
++        self.programs[name] = code
++        print(f"✓ Registered skill: {name}")
++
++    def has_skill(self, name: str) -> bool:
++        return name in self.programs
 ```
 
 ---
 
-## **Step 4 — Modify _ensure_dependency so MINING cannot trigger crafting**
+# ✅ **PATCH 3 — Dependency resolution: DO NOT re-synthesize known skills**
 
-### Find:
-
-```python
-def _ensure_dependency(self, dep: str, current_depth: int) -> bool:
-```
-
-### Change to:
-
-```python
-def _ensure_dependency(self, dep: str, current_depth: int, task_type="craft") -> bool:
-```
-
-Now add this block **at the beginning**:
-
-```python
-# MINING tasks are forbidden from invoking crafting dependencies
-if task_type == "mine":
-    print(f"[DEBUG] Mining task cannot auto-craft dependency '{dep}'. Failing only.")
-    return False
-```
-
-This enforces:
-
-### ✔ Mining NEVER calls crafting
-
-### ✔ Crafting CAN call mining recursively
-
-### ✔ Mining → crafting direction is blocked
-
-### ✔ Crafting → mining direction remains allowed
-
----
-
-## **Step 5 — Add a dedicated mining primitive executor**
-
-Add at bottom of `executor.py`:
-
-```python
-def direct_mine(self, item_name: str, count: int = 1, task_type="mine"):
-    # mining primitive, bypasses skill synthesis and crafting logic
-    print(f"[DEBUG] Direct mining: {count} x {item_name}")
-    success, events = self._direct_execute_gather(item_name, count)
-    return success, events
+```diff
+--- a/voyager/executor/executor.py
++++ b/voyager/executor/executor.py
+@@ def resolve_dependency(self, dep):
+-        # Always synthesize a skill for dependency (OLD)
+-        print(f"Recursively discovering skill for: {dep}")
+-        dep_skill_code = self.synthesize_and_register(dep)
+-        return self.execute_skill(dep_skill_code)
++        # NEW: If skill exists → run it directly. No synthesis.
++        skill_name = f"craft{dep.title().replace('_','')}"
++
++        if self.skill_manager.has_skill(skill_name):
++            print(f"Executing known skill for dependency: {skill_name}")
++            return self.execute_skill(skill_name)
++
++        # otherwise: learn a new skill recursively (first time only)
++        print(f"Learning new skill for dependency: {dep}")
++        dep_skill_code = self.synthesize_skill(skill_name, steps=[])
++        self.skill_manager.register_skill(skill_name, dep_skill_code)
++        return self.execute_skill(skill_name)
 ```
 
 ---
 
-# 🟦 **FILE 3 — skill_manager.py (if exists)**
+# ✅ **PATCH 4 — Prevent infinite re-execution of synthesized skills**
 
-If your SkillManager saves mining skills, prevent that.
-
-Search for:
-
-```python
-if step.step_type == "primitive":
-```
-
-Add before saving:
-
-```python
-if "mineBlock" in program_code:
-    print("[DEBUG] Not saving mining primitive as skill")
-    return
-```
-
-This prevents junk functions like:
+The executor main retry loop currently looks like:
 
 ```
-mineOakLogs
-mineClayBlocks
-mineOneWoodLog
+while True:
+    try craft
+    if fail → resolve dependencies
+    continue
 ```
 
-from ever polluting your skill library.
+We change it so that **only ONE retry** may happen after resolving deps.
+After that retry, if success → exit; if fail → exit with failure.
+
+```diff
+--- a/voyager/executor/executor.py
++++ b/voyager/executor/executor.py
+@@ def executor_craft(self, item_name):
+-        # OLD infinite retry loop
+-        while True:
+-            success, events = self.attempt_craft(item_name)
+-            if not success:
+-                deps = self.parse_missing_deps(events)
+-                for d in deps:
+-                    self.resolve_dependency(d)
+-                continue
+-            else:
+-                # handled above
+-                pass
++        # NEW: Try once → if fail, resolve deps → retry ONCE → exit
++
++        # 1st attempt
++        success, events = self.attempt_craft(item_name)
++
++        if success:
++            return self._finalize_success(item_name, steps)
++
++        # if fail: resolve deps
++        deps = self.parse_missing_deps(events)
++        for d in deps:
++            self.resolve_dependency(d)
++
++        # retry ONCE
++        success, events = self.attempt_craft(item_name)
++
++        if success:
++            return self._finalize_success(item_name, steps)
++
++        # if still failing → give up
++        return {"task": f"Craft {item_name}", "success": False, "executor_mode": True}
+```
+
+Add helper:
+
+```diff
++    def _finalize_success(self, item_name, steps):
++        skill_name = f"craft{item_name.title().replace('_','')}"
++        if not self.skill_manager.has_skill(skill_name):
++            skill_code = self.synthesize_skill(skill_name, steps)
++            self.skill_manager.register_skill(skill_name, skill_code)
++        return {
++            "task": f"Craft {item_name}",
++            "success": True,
++            "executor_mode": True
++        }
+```
 
 ---
 
-# 🟦 **FILE 4 — voyager.py (final cleanup)**
+# **RESULT**
 
-Find any place that calls mining functions via ensure_skill.
-Replace ALL:
+Once these 4 patches are applied:
 
-```python
-self.executor.ensure_skill(mine_skill_name, ...)
-```
+### ✔ No more repeated crafting after success
 
-with:
+### ✔ No more duplicate skill registration
 
-```python
-self.executor.direct_mine(block_type, count, task_type="mine")
-```
+### ✔ Executor always stops when recipe chain completes
 
-This ensures mining is always:
+### ✔ Skills are not synthesized again if already known
 
-### ✔ direct mining primitive
-
-### ✔ no skill synthesis
-
-### ✔ no dependency resolution
-
-### ✔ no crafting recursion
-
-### ✔ no LLM-wrapped functions
+### ✔ Executor behavior now matches your intended HTN pseudo-algorithm exactly
 
 ---
 
-# 🎯 FINAL RESULT (AFTER CODER APPLIES THESE CHANGES)
-
-### ✔ Mining never triggers crafting dependencies
-
-### ✔ Crafting tasks dynamically re-synthesize outdated skills
-
-### ✔ Mining tasks stay flat, simple, deterministic
-
-### ✔ Skills remain exclusively for crafting (with recursive dependencies)
-
-### ✔ No more polluted skill library with mineX functions
-
-### ✔ Executor becomes a correct hierarchical task planner
-
-### ✔ Coal-mining no longer inherits pickaxe-building chains
-
-### ✔ Crafting remains self-updating as inventory changes
 
