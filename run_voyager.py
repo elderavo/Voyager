@@ -1,5 +1,6 @@
 import os
 from voyager import Voyager
+from voyager.env.bridge import HARD_RESET, SOFT_RESET
 
 # Disable ChromaDB telemetry to avoid errors
 #os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -22,4 +23,6 @@ voyager = Voyager(
 )
 
 # Start the learning process
-voyager.learn()
+result = voyager.learn_v2()
+
+voyager.env.reset(options={"mode": HARD_RESET})

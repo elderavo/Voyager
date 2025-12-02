@@ -460,6 +460,22 @@ app.post("/pause", (req, res) => {
     });
 });
 
+app.post("/unpause", (req, res) => {
+    if (!bot) {
+        res.status(400).json({ error: "Bot not spawned" });
+        return;
+    }
+    bot.chat("/pause");  // In Minecraft, /pause is a toggle, but we use it to unpause
+    bot.waitForTicks(bot.waitTicks).then(() => {
+        res.json({ message: "Success" });
+    });
+});
+
+app.get("/health", (req, res) => {
+    // Health check endpoint - returns 200 if server is up
+    res.json({ status: "ok" });
+});
+
 // Server listening to PORT 3000
 
 const DEFAULT_PORT = 3000;

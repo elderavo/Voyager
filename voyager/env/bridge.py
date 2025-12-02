@@ -1,21 +1,33 @@
 import os.path
 import time
 import warnings
-from typing import SupportsFloat, Any, Tuple, Dict
+from typing import Any, Tuple, Dict
 
 import requests
 import json
-
-import gymnasium as gym
-from gymnasium.core import ObsType 
 
 import voyager.utils as U
 
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
 
+# Reset mode constants
+HARD_RESET = "hard"
+SOFT_RESET = "soft"
 
-class VoyagerEnv(gym.Env):
+
+class VoyagerEnv:
+    """
+    VoyagerEnv: Minimal RPC wrapper around the Mineflayer HTTP server.
+
+    This is NOT a Gym environment - it's a stateless bridge that:
+    - Manages the Mineflayer subprocess
+    - Provides step/reset/pause/unpause methods
+    - Returns raw Mineflayer event data
+
+    World state tracking should be done separately (e.g., WorldStateTracker).
+    """
+
     def __init__(
         self,
         mc_host="localhost",
@@ -50,6 +62,10 @@ class VoyagerEnv(gym.Env):
         self.server_paused = False
 
     def get_mineflayer_process(self, server_port):
+        """
+        Construct the SubprocessMonitor for Mineflayer.
+        Does NOT start the process - that happens in check_process().
+        """
         U.f_mkdir(self.log_path, "mineflayer")
         file_path = os.path.abspath(os.path.dirname(__file__))
         mineflayer_dir = U.f_join(file_path, "mineflayer")
@@ -74,33 +90,94 @@ class VoyagerEnv(gym.Env):
             log_path=U.f_join(self.log_path, "minecraft"),
         )
 
+    def _decode_response(self, res) -> Any:
+        """
+        Centralized response decoder for Mineflayer HTTP responses.
+
+        Handles:
+        - UTF-8 decoding with error replacement
+        - Double JSON encoding (Mineflayer sometimes returns JSON-wrapped JSON)
+
+        Args:
+            res: requests.Response object
+
+        Returns:
+            Decoded Python data structure
+        """
+        raw_bytes = res.content
+        decoded_text = raw_bytes.decode("utf-8", errors="replace")
+        data = json.loads(decoded_text)
+        # Handle double-encoded JSON
+        if isinstance(data, str):
+            data = json.loads(data)
+        return data
+
+    def _healthcheck(self) -> bool:
+        """
+        Check if Mineflayer HTTP server is healthy.
+
+        Returns:
+            True if server responds to /health endpoint, False otherwise
+        """
+        try:
+            res = requests.get(f"{self.server}/health", timeout=2)
+            return res.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
+
     def check_process(self):
+        """
+        Ensure Minecraft and Mineflayer processes are running and healthy.
+
+        Responsibilities:
+        - Start MC instance if needed
+        - Start/restart Mineflayer if not running or unhealthy
+        - Call /start endpoint once per new Mineflayer process
+        - Return the initial state from /start
+
+        Returns:
+            Initial state data from Mineflayer /start endpoint
+        """
+        # Check and start Minecraft instance if needed
         if self.mc_instance and not self.mc_instance.is_running:
-            # if self.mc_instance:
-            #     self.mc_instance.check_process()
-            #     if not self.mc_instance.is_running:
             print("Starting Minecraft server")
             self.mc_instance.run()
             self.mc_port = self.mc_instance.port
             self.reset_options["port"] = self.mc_instance.port
             print(f"Server started on port {self.reset_options['port']}")
-        retry = 0
-        while not self.mineflayer.is_running:
-            print("Mineflayer process has exited, restarting")
+
+        retry_count = 0
+        max_process_retries = 3
+
+        # Check if Mineflayer process needs to be started/restarted
+        while not self.mineflayer.is_running or not self._healthcheck():
+            if self.mineflayer.is_running and not self._healthcheck():
+                print("Mineflayer process running but unhealthy → restarting")
+                self.mineflayer.stop()
+                time.sleep(0.5)
+            else:
+                print("Mineflayer process not running → starting")
+
             self.mineflayer.run()
+
             if not self.mineflayer.is_running:
-                if retry > 3:
-                    raise RuntimeError("Mineflayer process failed to start")
+                retry_count += 1
+                if retry_count > max_process_retries:
+                    raise RuntimeError(
+                        f"Mineflayer process failed to start after {max_process_retries} attempts"
+                    )
                 else:
+                    time.sleep(0.5)
                     continue
+
             print(self.mineflayer.ready_line)
 
-            # Give the server a moment to fully initialize after printing ready message
+            # Give the server a moment to fully initialize
             time.sleep(1)
 
-            # Retry connection with exponential backoff
-            max_retries = 5
-            for attempt in range(max_retries):
+            # Call /start endpoint with exponential backoff
+            max_start_retries = 5
+            for attempt in range(max_start_retries):
                 try:
                     res = requests.post(
                         f"{self.server}/start",
@@ -110,31 +187,58 @@ class VoyagerEnv(gym.Env):
                     if res.status_code != 200:
                         self.mineflayer.stop()
                         raise RuntimeError(
-                            f"Minecraft server reply with code {res.status_code}"
+                            f"Mineflayer /start endpoint replied with code {res.status_code}"
                         )
 
-                    # Handle encoding properly - same fix as step()
-                    raw_bytes = res.content
-                    decoded_text = raw_bytes.decode('utf-8', errors='replace')
-                    return json.loads(decoded_text)
+                    # Use centralized decoder
+                    return self._decode_response(res)
+
                 except (requests.exceptions.ConnectionError, ConnectionResetError):
-                    if attempt < max_retries - 1:
-                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5, 1, 2, 4 seconds
-                        print(f"Connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                    if attempt < max_start_retries - 1:
+                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff
+                        print(
+                            f"Connection failed (attempt {attempt + 1}/{max_start_retries}), "
+                            f"retrying in {wait_time}s..."
+                        )
                         time.sleep(wait_time)
                     else:
-                        print(f"Failed to connect to mineflayer server after {max_retries} attempts")
-                        raise
+                        print(f"Failed to connect to Mineflayer after {max_start_retries} attempts")
+                        raise RuntimeError(
+                            f"Failed to connect to Mineflayer server after {max_start_retries} attempts"
+                        )
+
+    def _ensure_initialized(self):
+        """
+        Ensure the environment has been initialized (reset at least once).
+
+        If not initialized, performs a hard reset with no inventory.
+        This provides a safety net so step() doesn't crash on missing reset.
+        """
+        if not self.has_reset:
+            print("[VoyagerEnv] Auto-initializing with hard reset (no prior reset detected)")
+            self.reset(options={"mode": HARD_RESET})
 
     def step(
         self,
         code: str,
         programs: str = "",
-    ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
-        if not self.has_reset:
-            raise RuntimeError("Environment has not been reset yet")
+    ) -> Any:
+        """
+        Execute a code step in Mineflayer.
+
+        Args:
+            code: JavaScript code to execute
+            programs: Additional program definitions
+
+        Returns:
+            List of Mineflayer events from this step
+        """
+        # Ensure initialized (auto-reset if needed)
+        self._ensure_initialized()
+
         self.check_process()
         self.unpause()
+
         data = {
             "code": code,
             "programs": programs,
@@ -143,18 +247,13 @@ class VoyagerEnv(gym.Env):
             f"{self.server}/step", json=data, timeout=self.step_timeout
         )
         if res.status_code != 200:
-            raise RuntimeError("Failed to step Minecraft server")
+            raise RuntimeError(f"Failed to step Minecraft server (status {res.status_code})")
 
-        # Handle encoding properly - decode bytes to UTF-8 first
-        raw_bytes = res.content
-        decoded_text = raw_bytes.decode('utf-8', errors='replace')
-        returned_data = json.loads(decoded_text)
+        # Use centralized decoder
+        returned_data = self._decode_response(res)
 
         self.pause()
 
-        # Handle double-encoded JSON if needed
-        if isinstance(returned_data, str):
-            return json.loads(returned_data)
         return returned_data
 
     def render(self):
@@ -165,17 +264,39 @@ class VoyagerEnv(gym.Env):
         *,
         seed=None,
         options=None,
-    ) -> Tuple[ObsType, Dict[str, Any]]:
+    ) -> Any:
+        """
+        Reset the Mineflayer environment.
+
+        Args:
+            seed: Not used (kept for compatibility)
+            options: Dict with reset options:
+                - mode: "hard" or "soft" (REQUIRED, no longer defaults silently)
+                - inventory: Dict of items (only valid for hard reset)
+                - equipment: List of equipment
+                - spread: Whether to spread spawn
+                - wait_ticks: Ticks to wait
+                - position: Spawn position
+
+        Returns:
+            Initial state events from Mineflayer
+
+        Note:
+            The environment NO LONGER silently changes mode from hard to soft.
+            Callers must explicitly specify mode for each reset.
+        """
         if options is None:
             options = {}
 
-        if options.get("inventory", {}) and options.get("mode", "hard") != "hard":
-            raise RuntimeError("inventory can only be set when options is hard")
+        mode = options.get("mode", HARD_RESET)
+
+        if options.get("inventory", {}) and mode != HARD_RESET:
+            raise RuntimeError("inventory can only be set when mode is 'hard'")
 
         self.reset_options = {
             "host": self.mc_host,
             "port": self.mc_port,
-            "reset": options.get("mode", "hard"),
+            "reset": mode,  # Explicit mode - no hidden mutation
             "inventory": options.get("inventory", {}),
             "equipment": options.get("equipment", []),
             "spread": options.get("spread", False),
@@ -190,16 +311,16 @@ class VoyagerEnv(gym.Env):
         returned_data = self.check_process()
         self.has_reset = True
         self.connected = True
-        # All the reset in step will be soft
-        self.reset_options["reset"] = "soft"
+
+        # IMPORTANT: We do NOT mutate reset_options["reset"] here anymore!
+        # Callers must explicitly control reset mode for each call.
+
         self.pause()
 
-        # Handle double-encoded JSON properly
-        if isinstance(returned_data, str):
-            return json.loads(returned_data)
         return returned_data
 
     def close(self):
+        """Close all connections and stop all processes."""
         self.unpause()
         if self.connected:
             res = requests.post(f"{self.server}/stop")
@@ -211,17 +332,48 @@ class VoyagerEnv(gym.Env):
         return not self.connected
 
     def pause(self):
+        """
+        Pause the Mineflayer server.
+
+        Precondition: Mineflayer is running and not already paused
+        Calls: POST /pause endpoint
+
+        Returns:
+            True if server is paused after this call
+        """
         if self.mineflayer.is_running and not self.server_paused:
-            res = requests.post(f"{self.server}/pause")
-            if res.status_code == 200:
-                self.server_paused = True
+            try:
+                res = requests.post(f"{self.server}/pause", timeout=5)
+                if res.status_code == 200:
+                    self.server_paused = True
+                else:
+                    print(f"[VoyagerEnv] Pause failed with status {res.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"[VoyagerEnv] Pause request failed: {e}")
         return self.server_paused
 
     def unpause(self):
+        """
+        Unpause the Mineflayer server.
+
+        Precondition: Mineflayer is running and currently paused
+        Calls: POST /unpause endpoint
+
+        Returns:
+            False if server is unpaused after this call, True if still paused
+        """
         if self.mineflayer.is_running and self.server_paused:
-            res = requests.post(f"{self.server}/pause")
-            if res.status_code == 200:
-                self.server_paused = False
-            else:
-                print(res.json())
+            try:
+                res = requests.post(f"{self.server}/unpause", timeout=5)
+                if res.status_code == 200:
+                    self.server_paused = False
+                else:
+                    print(f"[VoyagerEnv] Unpause failed with status {res.status_code}")
+                    if res.headers.get('content-type') == 'application/json':
+                        try:
+                            print(res.json())
+                        except:
+                            pass
+            except requests.exceptions.RequestException as e:
+                print(f"[VoyagerEnv] Unpause request failed: {e}")
         return self.server_paused
