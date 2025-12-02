@@ -39,7 +39,7 @@ def test_executor_mode(voyager):
     # Test 3: Craft crafting table (requires planks)
 
     print("\n--- Test 1: Wood Pick ---")
-    info = voyager.executor_craft("wooden pickaxe")
+    info = voyager.executor_craft(" pickaxe")
     print(f"Result: {info}")
     
     print("\n--- Test 1,2: Wood Pick again ---")
