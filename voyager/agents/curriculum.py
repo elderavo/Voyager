@@ -14,6 +14,7 @@ from voyager.utils.json_utils import fix_and_parse_json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import Chroma
+from voyager.agents.agents_common import WorldStateBuilder, ObservationFormatter, suggest_inventory_management_task
 
 
 class CurriculumAgent:
@@ -147,73 +148,57 @@ class CurriculumAgent:
         return system_message
 
     def render_observation(self, *, events, chest_observation):
-        assert events[-1][0] == "observe", "Last event must be observe"
-        event = events[-1][1]
-        biome = event["status"]["biome"]
-        time_of_day = event["status"]["timeOfDay"]
-        voxels = event["voxels"]
-        block_records = event["blockRecords"]
-        entities = event["status"]["entities"]
-        health = event["status"]["health"]
-        hunger = event["status"]["food"]
-        position = event["status"]["position"]
-        equipment = event["status"]["equipment"]
-        inventory_used = event["status"]["inventoryUsed"]
-        inventory = event["inventory"]
+        # Build WorldState using shared builder
+        world = WorldStateBuilder.from_events(
+            events=events,
+            chest_observation=chest_observation,
+            completed_tasks=self.completed_tasks,
+            failed_tasks=self.failed_tasks
+        )
 
+        # Use shared formatter to create observation dict
+        observation = ObservationFormatter.format_for_curriculum(
+            world=world,
+            warm_up_config=self.warm_up,
+            qa_context="",
+            progress=self.progress
+        )
+
+        # Apply underground biome detection
         if not any(
             "dirt" in block
             or "log" in block
             or "grass" in block
             or "sand" in block
             or "snow" in block
-            for block in voxels
+            for block in world.voxels
         ):
-            biome = "underground"
+            observation["biome"] = f"Biome: underground\n\n"
 
+        # Apply other_blocks filtering (blocks seen but not in voxels or inventory)
         other_blocks = ", ".join(
             list(
-                set(block_records).difference(set(voxels).union(set(inventory.keys())))
+                set(world.block_records).difference(set(world.voxels).union(set(world.inventory.keys())))
             )
         )
-
         other_blocks = other_blocks if other_blocks else "None"
+        observation["other_blocks"] = f"Other blocks that are recently seen: {other_blocks}\n\n"
 
-        nearby_entities = (
-            ", ".join([k for k, v in sorted(entities.items(), key=lambda x: x[1])])
-            if entities
-            else "None"
-        )
-
-        completed_tasks = (
-            ", ".join(self.completed_tasks) if self.completed_tasks else "None"
-        )
-        failed_tasks = ", ".join(self.failed_tasks) if self.failed_tasks else "None"
-
-        # filter out optional inventory items if required
+        # Filter out optional inventory items if required
         if self.progress < self.warm_up["optional_inventory_items"]:
-            inventory = {
+            filtered_inventory = {
                 k: v
-                for k, v in inventory.items()
+                for k, v in world.inventory.items()
                 if self._core_inv_items_regex.search(k) is not None
             }
+            observation["optional_inventory_items"] = f"Inventory ({world.inventory_used}/36): {filtered_inventory if filtered_inventory else 'Empty'}\n\n"
 
-        observation = {
-            "context": "",
-            "biome": f"Biome: {biome}\n\n",
-            "time": f"Time: {time_of_day}\n\n",
-            "nearby_blocks": f"Nearby blocks: {', '.join(voxels) if voxels else 'None'}\n\n",
-            "other_blocks": f"Other blocks that are recently seen: {other_blocks}\n\n",
-            "nearby_entities": f"Nearby entities: {nearby_entities}\n\n",
-            "health": f"Health: {health:.1f}/20\n\n",
-            "hunger": f"Hunger: {hunger:.1f}/20\n\n",
-            "position": f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n",
-            "equipment": f"Equipment: {equipment}\n\n",
-            "inventory": f"Inventory ({inventory_used}/36): {inventory if inventory else 'Empty'}\n\n",
-            "chests": chest_observation,
-            "completed_tasks": f"Completed tasks so far: {completed_tasks}\n\n",
-            "failed_tasks": f"Failed tasks that are too hard: {failed_tasks}\n\n",
-        }
+        # Format completed/failed tasks
+        completed_tasks = ", ".join(self.completed_tasks) if self.completed_tasks else "None"
+        failed_tasks = ", ".join(self.failed_tasks) if self.failed_tasks else "None"
+        observation["completed_tasks"] = f"Completed tasks so far: {completed_tasks}\n\n"
+        observation["failed_tasks"] = f"Failed tasks that are too hard: {failed_tasks}\n\n"
+
         return observation
 
     def render_human_message(self, *, events, chest_observation):
@@ -253,36 +238,36 @@ class CurriculumAgent:
         #     context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
         #     return task, context
 
-        # hard code task when inventory is almost full
-        inventoryUsed = events[-1][1]["status"]["inventoryUsed"]
-        if inventoryUsed >= 33:
-            if chest_observation != "Chests: None\n\n":
-                chests = chest_observation[8:-2].split("\n")
-                for chest in chests:
-                    content = chest.split(":")[1]
-                    if content == " Unknown items inside" or content == " Empty":
-                        position = chest.split(":")[0]
-                        task = f"Deposit useless items into the chest at {position}"
-                        context = (
-                            f"Your inventory have {inventoryUsed} occupied slots before depositing. "
-                            "After depositing, your inventory should only have 20 occupied slots. "
-                            "You should deposit useless items such as andesite, dirt, cobblestone, etc. "
-                            "Also, you can deposit low-level tools, "
-                            "For example, if you have a stone pickaxe, you can deposit a wooden pickaxe. "
-                            "Make sure the list of useless items are in your inventory "
-                            "(do not list items already in the chest), "
-                            "You can use bot.inventoryUsed() to check how many inventory slots are used."
-                        )
-                        return task, context
-            if "chest" in events[-1][1]["inventory"]:
+        # Use shared helper for inventory management tasks
+        world = WorldStateBuilder.from_events(
+            events=events,
+            chest_observation=chest_observation,
+            completed_tasks=self.completed_tasks,
+            failed_tasks=self.failed_tasks
+        )
+
+        inventory_task = suggest_inventory_management_task(world, chest_observation)
+        if inventory_task:
+            task, context = inventory_task
+            # For deposit tasks, add detailed context if we have chest positions
+            if task.startswith("Deposit useless items into the chest at"):
+                context = (
+                    f"Your inventory have {world.inventory_used} occupied slots before depositing. "
+                    "After depositing, your inventory should only have 20 occupied slots. "
+                    "You should deposit useless items such as andesite, dirt, cobblestone, etc. "
+                    "Also, you can deposit low-level tools, "
+                    "For example, if you have a stone pickaxe, you can deposit a wooden pickaxe. "
+                    "Make sure the list of useless items are in your inventory "
+                    "(do not list items already in the chest), "
+                    "You can use bot.inventoryUsed() to check how many inventory slots are used."
+                )
+            # For "Place a chest" task, check if we have one in inventory
+            elif "chest" in world.inventory:
                 task = "Place a chest"
                 context = (
-                    f"You have a chest in inventory, place it around you. "
-                    f"If chests is not None, or nearby blocks contains chest, this task is success."
+                    "You have a chest in inventory, place it around you. "
+                    "If chests is not None, or nearby blocks contains chest, this task is success."
                 )
-            else:
-                task = "Craft 1 chest"
-                context = "Craft 1 chest with 8 planks of any kind of wood."
             return task, context
 
         messages = [

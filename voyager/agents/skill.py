@@ -78,36 +78,83 @@ class SkillManager:
         print(
             f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"
         )
+
+        # Determine dumped program name (versioned if already exists)
         if program_name in self.skills:
             print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
-            self.vectordb._collection.delete(ids=[program_name])
             i = 2
             while f"{program_name}V{i}.js" in os.listdir(f"{self.ckpt_dir}/skill/code"):
                 i += 1
             dumped_program_name = f"{program_name}V{i}"
         else:
             dumped_program_name = program_name
-        self.vectordb.add_texts(
-            texts=[skill_description],
-            ids=[program_name],
-            metadatas=[{"name": program_name}],
-        )
-        self.skills[program_name] = {
-            "code": program_code,
-            "description": skill_description,
-        }
-        assert self.vectordb._collection.count() == len(
-            self.skills
-        ), "vectordb is not synced with skills.json"
-        U.dump_text(
-            program_code, f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js"
-        )
-        U.dump_text(
-            skill_description,
-            f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt",
-        )
-        U.dump_json(self.skills, f"{self.ckpt_dir}/skill/skills.json")
-        self.vectordb.persist()
+
+        # === TRANSACTIONAL WRITE PHASE ===
+        # 1. Write to temporary files first
+        code_tmp_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js.tmp"
+        desc_tmp_path = f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt.tmp"
+        json_tmp_path = f"{self.ckpt_dir}/skill/skills.json.tmp"
+
+        try:
+            # Write code and description to temp files
+            U.dump_text(program_code, code_tmp_path)
+            U.dump_text(skill_description, desc_tmp_path)
+
+            # Create updated skills dict and write to temp JSON
+            skills_tmp = dict(self.skills)
+            skills_tmp[program_name] = {
+                "code": program_code,
+                "description": skill_description,
+            }
+            U.dump_json(skills_tmp, json_tmp_path)
+
+            # 2. Update vectordb (if rewriting, delete old entry first)
+            if program_name in self.skills:
+                self.vectordb._collection.delete(ids=[program_name])
+
+            self.vectordb.add_texts(
+                texts=[skill_description],
+                ids=[program_name],
+                metadatas=[{"name": program_name}],
+            )
+
+            # 3. Commit: update in-memory state
+            self.skills = skills_tmp
+
+            # 4. Commit: rename temp files to final files
+            code_final_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js"
+            desc_final_path = f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt"
+            json_final_path = f"{self.ckpt_dir}/skill/skills.json"
+
+            if os.path.exists(code_final_path):
+                os.remove(code_final_path)
+            os.rename(code_tmp_path, code_final_path)
+
+            if os.path.exists(desc_final_path):
+                os.remove(desc_final_path)
+            os.rename(desc_tmp_path, desc_final_path)
+
+            if os.path.exists(json_final_path):
+                os.remove(json_final_path)
+            os.rename(json_tmp_path, json_final_path)
+
+            # 5. Persist vectordb
+            self.vectordb.persist()
+
+            # Verify sync
+            assert self.vectordb._collection.count() == len(
+                self.skills
+            ), "vectordb is not synced with skills.json"
+
+            print(f"\033[32mSkill Manager successfully saved {program_name} (as {dumped_program_name})\033[0m")
+
+        except Exception as e:
+            # Rollback: clean up temp files on failure
+            print(f"\033[31mSkill Manager failed to save {program_name}: {e}\033[0m")
+            for tmp_path in [code_tmp_path, desc_tmp_path, json_tmp_path]:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            raise
 
     def generate_skill_description(self, program_name, program_code):
         messages = [
