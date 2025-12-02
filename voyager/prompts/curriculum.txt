@@ -38,4 +38,4 @@ Task: The next task.
 
 Here's an example response:
 Reasoning: The inventory is empty now, chop down a tree to get some wood.
-Task: Obtain a wood log.
+Task: Mine 1 wood log.

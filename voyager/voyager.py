@@ -388,7 +388,7 @@ class Voyager:
             # Classify task type
             if task.lower().startswith("craft"):
                 task_type = "craft"
-            elif task.lower().startswith("mine"):
+            elif task.lower().startswith("mine",  "obtain", "gather", "collect"):
                 task_type = "mine"
             else:
                 task_type = "unknown"
