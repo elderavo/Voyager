@@ -94,10 +94,10 @@ class CurriculumAgent:
             self.warm_up["optional_inventory_items"] = 0
         for key in self.curriculum_observations:
             self.warm_up[key] = warm_up.get(key, self.default_warmup[key])
-        self.warm_up["nearby_blocks"] = 0
-        self.warm_up["inventory"] = 0
-        self.warm_up["completed_tasks"] = 0
-        self.warm_up["failed_tasks"] = 0
+        #self.warm_up["nearby_blocks"] = 0
+        # self.warm_up["inventory"] = 0
+        # self.warm_up["completed_tasks"] = 0
+        # self.warm_up["failed_tasks"] = 0
 
     @property
     def default_warmup(self):
@@ -105,7 +105,7 @@ class CurriculumAgent:
             "context": 15,
             "biome": 10,
             "time": 15,
-            "nearby_blocks": 0,
+            #"nearby_blocks": 0,
             "other_blocks": 10,
             "nearby_entities": 5,
             "health": 15,
@@ -125,14 +125,14 @@ class CurriculumAgent:
             "context",
             "biome",
             "time",
-            "nearby_blocks",
+            #"nearby_blocks",
             "other_blocks",
             "nearby_entities",
             "health",
             "hunger",
             "position",
             "equipment",
-            "inventory",
+            #"inventory",
             "chests",
             "completed_tasks",
             "failed_tasks",

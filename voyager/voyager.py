@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 import time
 from typing import Dict
 
@@ -416,8 +417,6 @@ class Voyager:
             # Classify task type
             if task.lower().startswith("craft"):
                 task_type = "craft"
-            elif task.lower().startswith(("mine",  "obtain", "gather", "collect")):
-                task_type = "mine"
             else:
                 task_type = "unknown"
 
@@ -449,54 +448,6 @@ class Voyager:
                         self.last_events = self.env.step("")
                     except Exception:
                         pass  # If even this fails, we'll handle it in the next iteration
-            elif use_executor and task_type == "mine":
-                # Extract block type and count from task
-                import re
-                match = re.match(r"mine\s+(\d+)?\s*(.+)", task.lower())
-                if match:
-                    count_str, block_type = match.groups()
-                    count = int(count_str) if count_str else 1
-                    block_type = block_type.strip()
-                else:
-                    # Fallback parsing
-                    parts = task[5:].strip().split()
-                    if parts and parts[0].isdigit():
-                        count = int(parts[0])
-                        block_type = " ".join(parts[1:])
-                    else:
-                        count = 1
-                        block_type = " ".join(parts)
-
-                print(f"\033[36m[Executor Mode] Mining: {count} x {block_type}\033[0m")
-
-                try:
-                    success, events = self.executor.direct_mine(block_type, count, task_type="mine")
-
-                    # Store events
-                    if isinstance(events, list) and events:
-                        self.last_events = events
-                    else:
-                        self.last_events = self.env.step("")
-
-                    info = {
-                        "task": task,
-                        "success": success,
-                        "executor_mode": True,
-                        "is_one_line_primitive": True,  # Mining is always primitive
-                    }
-                except Exception as e:
-                    info = {
-                        "task": task,
-                        "success": False,
-                    }
-                    print(f"\033[31m[Executor Mode] Mining Error: {e}\033[0m")
-                    import traceback
-                    traceback.print_exc()
-                    # Get fresh state after error
-                    try:
-                        self.last_events = self.env.step("")
-                    except Exception:
-                        pass
             else:
                 # Use existing Action Agent path
                 # No need to reset env between tasks - we already have fresh state

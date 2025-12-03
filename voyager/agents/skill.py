@@ -62,32 +62,45 @@ class SkillManager:
         return programs
 
     def add_new_skill(self, info):
+        
+        # === SHOULD WE SAVE THIS SKILL? ===========================================
+        # 1. Skip deposits (not reusable)
         if info["task"].startswith("Deposit useless items into the chest at"):
-            # No need to reuse the deposit skill
             return
 
         program_name = info["program_name"]
         program_code = info["program_code"]
 
-        # Only skip saving if executor explicitly marked this as a pure primitive
-        if info.get("is_one_line_primitive", True):
-            print(f"[DEBUG] Skipping primitive skill: {program_name}")
+        # 2. Skip saving *only when explicitly marked* as a primitive
+        #    Default = False → treat as a full skill unless ActionAgent explicitly says otherwise
+        is_primitive = info.get("is_one_line_primitive", False)
+        if is_primitive:
+            print(f"[DEBUG] Not saving primitive skill: {program_name}")
             return
 
-        skill_description = self.generate_skill_description(program_name, program_code)
-        print(
-            f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"
-        )
-
-        # Determine dumped program name (versioned if already exists)
+        # 3. If skill already exists AND the new code is identical → skip entirely
         if program_name in self.skills:
-            print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
+            existing = self.skills[program_name]["code"]
+            if existing.strip() == program_code.strip():
+                print(f"[DEBUG] Skill {program_name} already exists and is identical — skipping save.")
+                return
+
+        # 4. If skill already exists but code differs → ONLY rewrite if "force_relearn" flag is set
+        force_relearn = info.get("force_relearn", False)
+        if program_name in self.skills and not force_relearn:
+            print(f"[DEBUG] Skill {program_name} exists but no force_relearn flag — NOT overwriting.")
+            return
+
+        # 5. Determine dumped program name (version if overwriting)
+        if program_name in self.skills:
+            print(f"[DEBUG] force_relearn=True → rewriting skill {program_name}")
             i = 2
             while f"{program_name}V{i}.js" in os.listdir(f"{self.ckpt_dir}/skill/code"):
                 i += 1
             dumped_program_name = f"{program_name}V{i}"
         else:
             dumped_program_name = program_name
+
 
         # === TRANSACTIONAL WRITE PHASE ===
         # 1. Write to temporary files first
