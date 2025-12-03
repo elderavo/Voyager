@@ -97,10 +97,24 @@ async function ensureCraftingTable(bot, itemName) {
     let table = await findNearbyCraftingTable(bot, 32, 3, 3);
 
     if (table) {
-        await bot.pathfinder.goto(new (require('mineflayer-pathfinder').goals.GoalNear)(table.position.x, table.position.y, table.position.z, 1));
-    return table;
+        try {
+            await bot.pathfinder.goto(new (require('mineflayer-pathfinder').goals.GoalNear)(table.position.x, table.position.y, table.position.z, 1));
+            return table;
+        } catch (err) {
+            // If pathfinding times out, the table might be floating/unreachable - delete it and place a new one
+            if (err.message && err.message.includes("Took to long to decide path to goal")) {
+                bot.chat(`[CT:UNREACHABLE] Table at ${table.position} unreachable, removing...`);
+                bot.chat(`/setblock ${table.position.x} ${table.position.y} ${table.position.z} air`);
+                await bot.waitForTicks(3);
+                // Fall through to placement logic below
+                table = null;
+            } else {
+                throw err;
+            }
+        }
     }
-    // No table found; see if we can place one from inventory
+
+    // No table found or table was removed; see if we can place one from inventory
     const ctItemDef = mcData.itemsByName["crafting_table"];
     if (!ctItemDef) {
         bot.chat(`craftItem: crafting_table item definition missing in mcData`);

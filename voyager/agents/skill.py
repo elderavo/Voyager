@@ -29,7 +29,6 @@ class SkillManager:
             request_timeout=http_timeout,
         )
         U.f_mkdir(f"{ckpt_dir}/skill/code")
-        U.f_mkdir(f"{ckpt_dir}/skill/description")
         U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
         # programs for env execution
         self.control_primitives = load_control_primitives()
@@ -105,28 +104,27 @@ class SkillManager:
         # === TRANSACTIONAL WRITE PHASE ===
         # 1. Write to temporary files first
         code_tmp_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js.tmp"
-        desc_tmp_path = f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt.tmp"
         json_tmp_path = f"{self.ckpt_dir}/skill/skills.json.tmp"
 
         try:
-            # Write code and description to temp files
+            # Write code to temp file
             U.dump_text(program_code, code_tmp_path)
-            U.dump_text(skill_description, desc_tmp_path)
 
             # Create updated skills dict and write to temp JSON
+            # Only store code - no description required
             skills_tmp = dict(self.skills)
             skills_tmp[program_name] = {
                 "code": program_code,
-                "description": skill_description,
             }
             U.dump_json(skills_tmp, json_tmp_path)
 
             # 2. Update vectordb (if rewriting, delete old entry first)
+            # Use program_name as the searchable text for retrieval
             if program_name in self.skills:
                 self.vectordb._collection.delete(ids=[program_name])
 
             self.vectordb.add_texts(
-                texts=[skill_description],
+                texts=[program_name],
                 ids=[program_name],
                 metadatas=[{"name": program_name}],
             )
@@ -136,16 +134,11 @@ class SkillManager:
 
             # 4. Commit: rename temp files to final files
             code_final_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js"
-            desc_final_path = f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt"
             json_final_path = f"{self.ckpt_dir}/skill/skills.json"
 
             if os.path.exists(code_final_path):
                 os.remove(code_final_path)
             os.rename(code_tmp_path, code_final_path)
-
-            if os.path.exists(desc_final_path):
-                os.remove(desc_final_path)
-            os.rename(desc_tmp_path, desc_final_path)
 
             if os.path.exists(json_final_path):
                 os.remove(json_final_path)
@@ -164,7 +157,7 @@ class SkillManager:
         except Exception as e:
             # Rollback: clean up temp files on failure
             print(f"\033[31mSkill Manager failed to save {program_name}: {e}\033[0m")
-            for tmp_path in [code_tmp_path, desc_tmp_path, json_tmp_path]:
+            for tmp_path in [code_tmp_path, json_tmp_path]:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             raise
