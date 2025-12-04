@@ -57,14 +57,6 @@ class ExecutorSkills:
         self.task_stack: List[SkillDiscoveryTask] = []
         self.current_depth = 0
 
-        # Gatherable primitives (can be obtained via mineBlock)
-        self.gatherable_primitives = {
-            "oak_log", "spruce_log", "birch_log", "jungle_log", "acacia_log",
-            "dark_oak_log", "mangrove_log", "stone", "cobblestone", "dirt",
-            "coal_ore", "iron_ore", "copper_ore", "gold_ore", "diamond_ore",
-            "lapis_ore", "redstone_ore", "emerald_ore", "coal", "sand", "gravel",
-        }
-
     def ensure_skill(self, skill_name: str, depth: int = 0, task_type: str = "craft",
                      actions_executor=None) -> Tuple[bool, List[ExecutionStep]]:
         """
@@ -84,8 +76,6 @@ class ExecutorSkills:
         - Parent callers ONLY record a single "skill" call for this skill,
           never its internal primitives. This avoids primitive+composite duplication.
         """
-        # TODO: The second to last and last craft calls are redundant. Ex: 
-        
         if actions_executor is None:
             raise ValueError("actions_executor is required for ensure_skill")
 
@@ -200,9 +190,12 @@ class ExecutorSkills:
     def ensure_dependency(self, dep: str, current_depth: int, task_type: str = "craft",
                           actions_executor=None) -> bool:
         """
-        Ensure a single dependency is satisfied.
+        Ensure a single dependency is satisfied using strict craft-then-gather hierarchy.
 
-        Determines if dependency is gatherable or craftable, then handles accordingly.
+        Resolution order:
+        1. If craftable → recursively ensure craft skill
+        2. Else if gatherable → mine source blocks
+        3. Else → fail
 
         CRITICAL BEHAVIOR FOR CLEAN SKILLS:
         - For gatherable primitives → we record a 'mineBlock' primitive
@@ -214,53 +207,82 @@ class ExecutorSkills:
         if actions_executor is None:
             raise ValueError("actions_executor is required for ensure_dependency")
 
+        # Normalize dependency name
+        norm = self.utils.normalize_item_name(dep)
+        if isinstance(norm, dict):
+            # normalize_item_name returned suggestions (no exact match)
+            # Only use suggestions if we have them, otherwise keep original
+            if norm.get("suggestions"):
+                print(f"\033[33m[WARNING] '{dep}' has no exact match, using suggestion: {norm['suggestions'][0]}\033[0m")
+                dep = norm["suggestions"][0]
+            else:
+                print(f"\033[31m[ERROR] '{dep}' cannot be normalized\033[0m")
+                return False
+        elif norm:
+            # Got a clean string match
+            dep = norm
+        else:
+            # normalize_item_name returned None
+            print(f"\033[31m[ERROR] '{dep}' returned None from normalization\033[0m")
+            return False
+
         # MINING tasks are forbidden from invoking crafting dependencies
         if task_type == "mine":
             print(f"\033[31m[DEBUG] Mining task cannot auto-craft dependency '{dep}'. Failing only.\033[0m")
             return False
 
-        # Check if it's a gatherable primitive
-        if dep in self.gatherable_primitives or dep.endswith("_log") or dep.endswith("_ore"):
-            print(f"\033[36mGathering primitive: {dep}\033[0m")
-            success, events = actions_executor.direct_execute_gather(dep, count=1)
+        # ---- STEP 1: CRAFTABILITY CHECK (dominant path) ----
+        if self.utils.is_craftable(dep):
+            dep_skill_name = f"craft{self.utils.to_camel_case(dep)}"
+            print(f"\033[36m[DEBUG] {dep} is craftable → ensuring skill {dep_skill_name}\033[0m")
+
+            # Known skill
+            if dep_skill_name in self.skill_manager.skills:
+                print(f"\033[36mExecuting known skill for dependency: {dep_skill_name}\033[0m")
+                success, _ = actions_executor.execute_skill(dep_skill_name)
+                if success and self.task_stack:
+                    self.task_stack[-1].execution_sequence.append(
+                        ExecutionStep("skill", dep_skill_name, [], success=True)
+                    )
+                return success
+
+            # Discover new craft skill
+            print(f"\033[36mRecursively discovering craft skill: {dep_skill_name}\033[0m")
+            success, _ = self.ensure_skill(
+                dep_skill_name,
+                depth=current_depth + 1,
+                task_type=task_type,
+                actions_executor=actions_executor
+            )
 
             if success and self.task_stack:
-                # Record primitive in the CURRENT skill's execution sequence
-                step = ExecutionStep("primitive", "mineBlock", [dep, "1"], success=True)
-                self.task_stack[-1].execution_sequence.append(step)
-
+                self.task_stack[-1].execution_sequence.append(
+                    ExecutionStep("skill", dep_skill_name, [], success=True)
+                )
             return success
 
-        # Otherwise, it's craftable - check if we have a skill for it
-        dep_skill_name = f"craft{self.utils.to_camel_case(dep)}"
+        # ---- STEP 2: GATHERABILITY CHECK (fallback path) ----
+        print(f"\033[36m[DEBUG] {dep} is not craftable, checking if gatherable...\033[0m")
+        source_blocks = actions_executor.get_source_blocks_for_item(dep)
 
-        # Known skill — treat it as a black-box skill call
-        if dep_skill_name in self.skill_manager.skills:
-            print(f"\033[36mExecuting known skill for dependency: {dep_skill_name}\033[0m")
-            success, events = actions_executor.execute_skill(dep_skill_name)
+        if source_blocks:
+            for i, block in enumerate(source_blocks[:3]):
+                print(f"\033[36m[DEBUG] {dep} is gatherable via {block} (attempt {i+1}/3)\033[0m")
+                success, _ = actions_executor.direct_execute_gather(block, count=1)
 
-            if success and self.task_stack:
-                # Record ONLY the skill call, not its internals
-                step = ExecutionStep("skill", dep_skill_name, [], success=True)
-                self.task_stack[-1].execution_sequence.append(step)
+                if success:
+                    if self.task_stack:
+                        self.task_stack[-1].execution_sequence.append(
+                            ExecutionStep("primitive", "mineBlock", [block, "1"], success=True)
+                        )
+                    return True
 
-            return success
+            print(f"\033[31m[ERROR] Failed to gather {dep} from: {source_blocks[:3]}\033[0m")
+            return False
 
-        # Unknown skill - recurse to discover it
-        print(f"\033[36mRecursively discovering skill for: {dep}\033[0m")
-        success, _ = self.ensure_skill(
-            dep_skill_name,
-            depth=current_depth + 1,
-            task_type=task_type,
-            actions_executor=actions_executor
-        )
-
-        if success and self.task_stack:
-            # Now that the sub-skill exists, record only a skill call here
-            step = ExecutionStep("skill", dep_skill_name, [], success=True)
-            self.task_stack[-1].execution_sequence.append(step)
-
-        return success
+        # ---- STEP 3: FAILURE ----
+        print(f"\033[31m[ERROR] Cannot obtain dependency '{dep}' (not craftable, not gatherable)\033[0m")
+        return False
 
     def synthesize_skill(self, skill_name: str, execution_sequence: List[ExecutionStep]):
         """

@@ -61,6 +61,37 @@ class ExecutorUtils:
         print(f"\033[31m[DEBUG] Failed to fetch items from mcData\033[0m")
         return []
 
+    def is_craftable(self, item_name: str) -> bool:
+        """
+        Query mcData to determine if the item has any crafting recipes.
+
+        Args:
+            item_name: The item to check for craftability
+
+        Returns:
+            True if the item has at least one crafting recipe, False otherwise
+        """
+        safe = item_name.replace("\\", "\\\\").replace("'", "\\'")
+        code = f"""
+const mcData = require('minecraft-data')(bot.version);
+const item = mcData.itemsByName['{safe}'];
+if (!item) {{
+    bot.chat("CRAFTABLE:no");
+}} else {{
+    const recipes = mcData.recipes[item.id] || [];
+    bot.chat("CRAFTABLE:" + (recipes.length > 0 ? "yes" : "no"));
+}}
+"""
+        events = self.env.step(code=code, programs=self.skill_manager.programs)
+
+        for etype, event in events:
+            if etype == "onChat":
+                msg = event.get("onChat", event) if isinstance(event, dict) else event
+                if msg.startswith("CRAFTABLE:"):
+                    return msg.endswith("yes")
+
+        return False
+
     def normalize_item_name(self, raw_name: str) -> Optional[str]:
         """
         Normalize a curriculum-supplied item name into a canonical Mineflayer item id.
@@ -146,40 +177,65 @@ class ExecutorUtils:
     def match_item_js(self, normalized: str) -> Optional[str]:
         js_query = normalized.replace("'", "\\'")
 
-        # Stricter matching order:
+        # Stricter matching order with separate passes to ensure exact match priority:
         # 1. exact
-        # 2. startsWith
-        # 3. underscore-insensitive exact
-        # 4. substring
-        # 5. underscore-insensitive substring
+        # 2. underscore-insensitive exact
+        # 3. startsWith (only if exact length match)
+        # 4. startsWith (any)
+        # 5. substring
         code = f"""
             const q = '{js_query}';
             const qplain = q.replace(/_/g, '');
+            const items = Object.keys(bot.registry.itemsByName);
 
             let best = null;
 
-            for (const name of Object.keys(bot.registry.itemsByName)) {{
-                const plain = name.replace(/_/g, '');
-
-                // 1. Exact match
-                if (name === q) {{ best = name; break; }}
-
-                // 2. Prefix match ("stick" → "stick", not "sticky_piston")
-                if (name.startsWith(q)) {{ best = name; break; }}
-
-                // 3. Underscore-insensitive exact
-                if (plain === qplain) {{ best = name; break; }}
-
-                // 4. Substring (only if q > 3 chars)
-                if (q.length >= 4 && name.includes(q)) {{
+            // Pass 1: Exact match (highest priority)
+            for (const name of items) {{
+                if (name === q) {{
                     best = name;
                     break;
                 }}
+            }}
 
-                // 5. Underscore-insensitive substring
-                if (q.length >= 4 && plain.includes(qplain)) {{
-                    best = name;
-                    break;
+            // Pass 2: Underscore-insensitive exact match
+            if (!best) {{
+                for (const name of items) {{
+                    const plain = name.replace(/_/g, '');
+                    if (plain === qplain) {{
+                        best = name;
+                        break;
+                    }}
+                }}
+            }}
+
+            // Pass 3: Prefix match with exact length (e.g., "stick" matches "stick", not "sticky_piston")
+            if (!best) {{
+                for (const name of items) {{
+                    if (name.startsWith(q) && name.length === q.length) {{
+                        best = name;
+                        break;
+                    }}
+                }}
+            }}
+
+            // Pass 4: Prefix match (any length)
+            if (!best) {{
+                for (const name of items) {{
+                    if (name.startsWith(q)) {{
+                        best = name;
+                        break;
+                    }}
+                }}
+            }}
+
+            // Pass 5: Substring match (only for longer queries)
+            if (!best && q.length >= 4) {{
+                for (const name of items) {{
+                    if (name.includes(q)) {{
+                        best = name;
+                        break;
+                    }}
                 }}
             }}
 

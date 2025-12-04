@@ -132,3 +132,49 @@ class ExecutorActions:
         success = self.utils.check_execution_success(events)
         return success, events
 
+    def get_source_blocks_for_item(self, item_name: str) -> List[str]:
+        """
+        Get all block names that drop the specified item when mined.
+
+        Uses mcData to authoritatively determine which blocks produce
+        the desired item as a drop.
+
+        Args:
+            item_name: The item to find source blocks for (e.g., "cobblestone")
+
+        Returns:
+            List of block names that drop this item (e.g., ["stone"] for cobblestone)
+        """
+        # Normalize JS string safely
+        safe = item_name.replace("\\", "\\\\").replace("'", "\\'").strip()
+
+    # const {{ getSourceBlocksForItem }} = require('./voyager/control_primitives/getSourceBlocksForItem.js');
+    # const mcData = require('minecraft-data')(bot.version);
+
+        code = f"""
+try {{
+    const result = getSourceBlocksForItem('{safe}', mcData);
+    bot.chat("SOURCE_BLOCKS:" + JSON.stringify(result));
+}} catch (e) {{
+    bot.chat("ERR:" + e.toString());
+}}
+"""
+
+        events = self.env.step(code=code, programs=self.skill_manager.programs)
+
+        for event_type, event in events:
+            if event_type == "onChat":
+                msg = event.get("onChat", event) if isinstance(event, dict) else event
+                if msg.startswith("SOURCE_BLOCKS:"):
+                    import json
+                    payload = msg.split("SOURCE_BLOCKS:", 1)[1].strip()
+                    try:
+                        return json.loads(payload)
+                    except json.JSONDecodeError as e:
+                        print(f"\033[31m[ERROR] Failed to parse SOURCE_BLOCKS JSON: {e}\033[0m")
+                        return []
+                elif msg.startswith("ERR:"):
+                    print(f"\033[31m[ERROR] JS error in getSourceBlocksForItem: {msg[4:]}\033[0m")
+                    return []
+
+        return []
