@@ -280,8 +280,12 @@ class ExecutorSkills:
             print(f"\033[31m[ERROR] Failed to gather {dep} from: {source_blocks[:3]}\033[0m")
             return False
 
-        # ---- STEP 3: FAILURE ----
+        # ---- STEP 3: FAILURE (cannot be obtained via Executor) ----
+        # Dependency cannot be obtained through automated means
+        # This will cause the parent craft to fail, which is correct behavior
+        # The high-level task router should delegate to ActionBot instead
         print(f"\033[31m[ERROR] Cannot obtain dependency '{dep}' (not craftable, not gatherable)\033[0m")
+        print(f"\033[33m[INFO] This dependency requires external handling (ActionBot)\033[0m")
         return False
 
     def synthesize_skill(self, skill_name: str, execution_sequence: List[ExecutionStep]):
