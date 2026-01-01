@@ -70,6 +70,30 @@ class Executor:
 
         return success, events
 
+    def _get_item_count(self, item_name: str) -> int:
+        """
+        Get current inventory count of an item.
+
+        Args:
+            item_name: Normalized item name
+
+        Returns:
+            Count of item in inventory
+        """
+        code = f"bot.chat('INV_COUNT:' + (bot.inventory.count(bot.registry.itemsByName['{item_name}']?.id || -1)));"
+        events = self.env.step(code, programs=self.skill_manager.programs)
+
+        for event_type, event in events:
+            if event_type == "onChat":
+                msg = event.get("onChat", event) if isinstance(event, dict) else event
+                if msg.startswith("INV_COUNT:"):
+                    try:
+                        return int(msg.split(":", 1)[1])
+                    except (ValueError, IndexError):
+                        return 0
+
+        return 0
+
     def ensure_skill(self, skill_name: str, depth: int = 0, task_type: str = "craft") -> Tuple[bool, List[ExecutionStep]]:
         """
         Ensure a skill exists, discovering it recursively if needed.
@@ -93,13 +117,13 @@ class Executor:
 
     def craft_item(self, item_name: str, task_type: str = "craft"):
         """
-        High-level helper to craft an item WITH QUANTITY SUPPORT.
+        High-level helper to craft an item WITH QUANTITY SUPPORT using inventory delta.
 
-        PATCH 1 & 4:
-        - ensure_skill() already crafts the item during discovery
-        - For quantity=1, we just return success after ensure_skill
-        - For quantity>1, we execute the skill (quantity-1) more times
-        - No program_code in return value to avoid re-execution loops
+        Uses inventory delta checking:
+        - Get initial inventory count
+        - Execute skill once
+        - Check if inventory increased by desired amount
+        - If not, loop until target reached or max retries hit
         """
         # =========================
         # 1. Extract quantity
@@ -129,7 +153,14 @@ class Executor:
         skill_name = f"craft{self.utils.to_camel_case(normalized_name)}"
 
         # =========================
-        # 4. Ensure skill exists (this ALREADY crafts the item once!)
+        # 4. Get initial inventory count
+        # =========================
+        initial_count = self._get_item_count(normalized_name)
+        target_count = initial_count + quantity
+        print(f"[QUANTITY] Initial {normalized_name}: {initial_count}, Target: {target_count}")
+
+        # =========================
+        # 5. Ensure skill exists (this crafts the item during discovery)
         # =========================
         skill_ok, _ = self.ensure_skill(skill_name, depth=0, task_type=task_type)
         if not skill_ok:
@@ -137,22 +168,32 @@ class Executor:
             return False, [], normalized_name
 
         # =========================
-        # 5. SUCCESS: Item was already crafted during ensure_skill
-        #    For quantity > 1, craft additional copies
+        # 6. Check inventory delta and craft more if needed
         # =========================
         all_events = []
+        max_attempts = quantity * 2  # Safety limit
 
-        # ensure_skill already crafted 1, so we only need (quantity - 1) more
-        for i in range(quantity - 1):
-            print(f"\033[36m[QUANTITY] Crafting additional copy {i+2}/{quantity}\033[0m")
+        for attempt in range(max_attempts):
+            current_count = self._get_item_count(normalized_name)
+            needed = target_count - current_count
+
+            if needed <= 0:
+                print(f"[QUANTITY] ✓ Reached target: {current_count}/{target_count}")
+                return True, all_events, normalized_name
+
+            print(f"[QUANTITY] Current: {current_count}, Needed: {needed} more (attempt {attempt+1}/{max_attempts})")
+
             success, events = self.execute_skill(skill_name)
             all_events.extend(events)
+
             if not success:
-                print(f"\033[31m[QUANTITY] Failed at copy {i+2}/{quantity}\033[0m")
+                print(f"\033[31m[QUANTITY] Craft failed at attempt {attempt+1}\033[0m")
                 return False, all_events, normalized_name
 
-        # PATCH 1: Return success WITHOUT program_code to prevent re-execution
-        return True, all_events, normalized_name
+        # Exhausted retries
+        final_count = self._get_item_count(normalized_name)
+        print(f"\033[31m[QUANTITY] Max attempts reached. Final: {final_count}/{target_count}\033[0m")
+        return final_count >= target_count, all_events, normalized_name
 
     def direct_mine(self, item_name: str, count: int = 1, task_type: str = "mine") -> Tuple[bool, List[Any]]:
         """

@@ -303,24 +303,21 @@ if (!item) {{
         components = snake_str.split('_')
         return ''.join(x.title() for x in components)
 
-    def parse_dependencies(self, events: List[Tuple[str, Any]]) -> List[str]:
+    def parse_dependencies(self, events: List[Tuple[str, Any]]) -> dict:
         """
         Parse missing dependencies from event chat messages.
 
         Looks for messages like:
         "I cannot make stick because I need: 2 more planks"
+        "I cannot make wooden_pickaxe because I need: 3 more oak_planks, 2 more stick"
 
-        Also handles error messages like:
-        "No crafting table nearby" -> ["crafting_table"]
-
-        Returns list of item names: ["planks"]
+        Returns dict with quantities: {"oak_planks": 3, "stick": 2}
         """
-        dependencies = []
+        dependencies = {}
 
         pattern = r"I cannot make .+ because I need: (.*)"
 
         print(f"\033[36m[DEBUG] Parsing dependencies from {len(events)} events\033[0m")
-        # TODO: NEED TO IMPLEMENT QUANTITY-BASED DEPENDENCIES
         for event_type, event in events:
             print(f"\033[36m[DEBUG] Event type: {event_type}\033[0m")
             if event_type == "onChat":
@@ -330,24 +327,26 @@ if (!item) {{
                 if match:
                     deps_str = match.group(1)
                     print(f"\033[36m[DEBUG] Matched dependency string: {deps_str}\033[0m")
-                    # Parse "2 more planks, 3 more sticks" -> ["planks", "sticks"]
+                    # Parse "3 more oak_planks, 2 more stick" -> {"oak_planks": 3, "stick": 2}
                     for item in deps_str.split(","):
-                        # Extract just the item name (remove "2 more" prefix)
-                        item_match = re.search(r"more (.+)", item.strip())
+                        # Extract quantity and item name
+                        item_match = re.search(r"(\d+)\s+more\s+(.+)", item.strip())
                         if item_match:
-                            dep_name = item_match.group(1).strip()
-                            dependencies.append(dep_name)
-                            print(f"\033[36m[DEBUG] Extracted dependency: {dep_name}\033[0m")
+                            quantity = int(item_match.group(1))
+                            dep_name = item_match.group(2).strip()
+                            # Aggregate if same item appears multiple times
+                            dependencies[dep_name] = dependencies.get(dep_name, 0) + quantity
+                            print(f"\033[36m[DEBUG] Extracted dependency: {dep_name} x{quantity}\033[0m")
             elif event_type == "onError":
                 error_msg = event.get("onError", "")
                 print(f"\033[31m[DEBUG] Error event: {error_msg}\033[0m")
 
                 # Check for "No crafting table nearby" error
                 if "No crafting table nearby" in error_msg or "no crafting table nearby" in error_msg:
-                    #dependencies.append("crafting_table")
+                    #dependencies["crafting_table"] = 1
                     print(f"\033[36m[DEBUG] Detected missing crafting_table from error\033[0m")
 
-        print(f"\033[36m[DEBUG] Final dependencies list: {dependencies}\033[0m")
+        print(f"\033[36m[DEBUG] Final dependencies dict: {dependencies}\033[0m")
         return dependencies
 
     def check_execution_success(self, events: List[Tuple[str, Any]]) -> bool:

@@ -77,16 +77,19 @@ class SkillManager:
             print(f"[DEBUG] Not saving primitive skill: {program_name}")
             return
 
-        # 3. If skill already exists AND the new code is identical → skip entirely
-        if program_name in self.skills:
+        # 3. Check if skill already persisted to disk
+        code_file_exists = os.path.exists(f"{self.ckpt_dir}/skill/code/{program_name}.js")
+
+        # If skill exists in memory AND on disk with identical code → skip save
+        if program_name in self.skills and code_file_exists:
             existing = self.skills[program_name]["code"]
             if existing.strip() == program_code.strip():
-                print(f"[DEBUG] Skill {program_name} already exists and is identical — skipping save.")
+                # Already persisted, nothing to do
                 return
 
-        # 4. If skill already exists but code differs → ONLY rewrite if "force_relearn" flag is set
+        # 4. If skill exists but code differs → ONLY rewrite if "force_relearn" flag is set
         force_relearn = info.get("force_relearn", False)
-        if program_name in self.skills and not force_relearn:
+        if program_name in self.skills and code_file_exists and not force_relearn:
             print(f"[DEBUG] Skill {program_name} exists but no force_relearn flag — NOT overwriting.")
             return
 

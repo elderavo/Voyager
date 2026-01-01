@@ -26,6 +26,7 @@ class ExecutionResult:
     is_one_line_primitive: bool = False
     errors: Optional[List[str]] = None
     conversations: List[Any] = field(default_factory=list)  # For LLM executors
+    new_skills: List[tuple[str, str]] = field(default_factory=list)  # (skill_name, code) for persistence
 
     def __repr__(self) -> str:
         status = "SUCCESS" if self.success else "FAILED"

@@ -92,6 +92,30 @@ async function findNearbyCraftingTable(bot, maxDistance = 32, attempts = 3, tick
  *
  * If still none is found, throws "No crafting table nearby".
  */
+
+function findPlaceableAdjacentPos(bot) {
+  const pos = bot.entity.position.floored();
+  const dirs = [
+    {dx: 1, dy: 0, dz: 0},
+    {dx: -1, dy: 0, dz: 0},
+    {dx: 0, dy: 0, dz: 1},
+    {dx: 0, dy: 0, dz: -1},
+    {dx: 0, dy: -1, dz: 0}, // ground below
+  ];
+
+  for (const {dx, dy, dz} of dirs) {
+    const support = bot.blockAt(pos.offset(dx, dy, dz));
+    if (!support) continue;
+    if (support.boundingBox !== "block") continue; // leaves, plants, air → skip
+
+    // Place on the face opposite of the support block
+    const placePos = support.position.offset(0, 1, 0); 
+    return {placePos, support};
+  }
+
+  return null;
+}
+
 async function ensureCraftingTable(bot, itemName) {
     // First, try to find an existing table
     let table = await findNearbyCraftingTable(bot, 32, 3, 3);
@@ -129,9 +153,13 @@ async function ensureCraftingTable(bot, itemName) {
     }
 
     // We have a crafting_table item → place it beside the bot
-    const placePos = bot.entity.position.offset(1, 0, 0).floored();
-    bot.chat(`[CT] Placing crafting table at ${placePos}`);
-    await placeItem(bot, "crafting_table", placePos);
+    const candidate = findPlaceableAdjacentPos(bot);
+    if (!candidate) {
+    throw new Error("No valid surface to place crafting table");
+    }
+
+    bot.chat(`[CT] Placing crafting table at ${candidate.placePos}`);
+    await placeItem(bot, "crafting_table", candidate.placePos);
     await bot.waitForTicks(5);
 
     // Re-scan for the table now that it should be placed

@@ -630,13 +630,17 @@ class Voyager:
 
             self.curriculum_agent.update_exploration_progress(info)
 
-            # g. Save skill if allowed and successful
-            if result.success and execution_plan.save_as_skill:
-                if not result.is_one_line_primitive:
-                    self.skill_manager.add_new_skill(info)
-                    print(f"\033[32m[V2] Saved skill: {result.program_name}\033[0m")
-                else:
-                    print(f"\033[33m[V2] Skipping skill save for primitive: {result.program_name}\033[0m")
+            # g. Persist all synthesized skills
+            if result.success and result.new_skills and execution_plan.save_as_skill:
+                for skill_name, skill_code in result.new_skills:
+                    skill_info = {
+                        "task": raw_task,
+                        "program_name": skill_name,
+                        "program_code": skill_code,
+                        "is_one_line_primitive": False,  # Synthesized skills are never primitives
+                    }
+                    self.skill_manager.add_new_skill(skill_info)
+                    print(f"\033[32m[V2] Saved skill: {skill_name}\033[0m")
 
             # h. Soft refresh for next iteration
             self.reset_manager.soft_refresh(self.world_state, result)

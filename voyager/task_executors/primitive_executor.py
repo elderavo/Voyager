@@ -75,10 +75,16 @@ class PrimitiveExecutor(TaskExecutor):
             item_str = item_name
 
         try:
+            # Clear the new_skills list before execution
+            self.executor.executor_skills.new_skills = []
+
             success, events, normalized_name = self.executor.craft_item(
                 item_str,
                 task_type="craft"
             )
+
+            # Collect synthesized skills
+            new_skills = list(self.executor.executor_skills.new_skills)
 
             # Build skill name if successful
             program_name = None
@@ -94,7 +100,8 @@ class PrimitiveExecutor(TaskExecutor):
                 events=events if events else [],
                 program_code=program_code,
                 program_name=program_name,
-                is_one_line_primitive=False  # Crafting can be complex
+                is_one_line_primitive=False,  # Crafting can be complex
+                new_skills=new_skills
             )
 
         except Exception as e:
