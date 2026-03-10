@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives_context import load_control_primitives_context
+from voyager.agents.agents_common import WorldStateBuilder, ObservationFormatter, PrimitiveDetector
 
 class ActionAgent:
     def __init__(
@@ -84,7 +85,6 @@ class ActionAgent:
 
     def render_system_message(self, skills=[]):
         system_template = load_prompt("action_template")
-        # FIXME: Hardcoded control_primitives
         base_skills = [
             "exploreUntil",
             "mineBlock",
@@ -112,99 +112,34 @@ class ActionAgent:
     def render_human_message(
         self, *, events, code="", task="", context="", critique=""
     ):
+        # Extract chat and error messages from events
         chat_messages = []
         error_messages = []
-        # FIXME: damage_messages is not used
-        damage_messages = []
-        assert events[-1][0] == "observe", "Last event must be observe"
         for i, (event_type, event) in enumerate(events):
             if event_type == "onChat":
                 chat_messages.append(event["onChat"])
             elif event_type == "onError":
                 error_messages.append(event["onError"])
-            elif event_type == "onDamage":
-                damage_messages.append(event["onDamage"])
-            elif event_type == "observe":
-                biome = event["status"]["biome"]
-                time_of_day = event["status"]["timeOfDay"]
-                voxels = event["voxels"]
-                entities = event["status"]["entities"]
-                health = event["status"]["health"]
-                hunger = event["status"]["food"]
-                position = event["status"]["position"]
-                equipment = event["status"]["equipment"]
-                inventory_used = event["status"]["inventoryUsed"]
-                inventory = event["inventory"]
-                assert i == len(events) - 1, "observe must be the last event"
 
-        observation = ""
+        # Build WorldState using shared builder
+        chest_observation = self.render_chest_observation()
+        world = WorldStateBuilder.from_events(
+            events=events,
+            chest_observation=chest_observation
+        )
 
-        if code:
-            observation += f"Code from the last round:\n{code}\n\n"
-        else:
-            observation += f"Code from the last round: No code in the first round\n\n"
-
-        if self.execution_error:
-            if error_messages:
-                error = "\n".join(error_messages)
-                observation += f"Execution error:\n{error}\n\n"
-            else:
-                observation += f"Execution error: No error\n\n"
-
-        if self.chat_log:
-            if chat_messages:
-                chat_log = "\n".join(chat_messages)
-                observation += f"Chat log: {chat_log}\n\n"
-            else:
-                observation += f"Chat log: None\n\n"
-
-        observation += f"Biome: {biome}\n\n"
-
-        observation += f"Time: {time_of_day}\n\n"
-
-        if voxels:
-            observation += f"Nearby blocks: {', '.join(voxels)}\n\n"
-        else:
-            observation += f"Nearby blocks: None\n\n"
-
-        if entities:
-            nearby_entities = [
-                k for k, v in sorted(entities.items(), key=lambda x: x[1])
-            ]
-            observation += f"Nearby entities (nearest to farthest): {', '.join(nearby_entities)}\n\n"
-        else:
-            observation += f"Nearby entities (nearest to farthest): None\n\n"
-
-        observation += f"Health: {health:.1f}/20\n\n"
-
-        observation += f"Hunger: {hunger:.1f}/20\n\n"
-
-        observation += f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n"
-
-        observation += f"Equipment: {equipment}\n\n"
-
-        if inventory:
-            observation += f"Inventory ({inventory_used}/36): {inventory}\n\n"
-        else:
-            observation += f"Inventory ({inventory_used}/36): Empty\n\n"
-
-        if not (
-            task == "Place and deposit useless items into a chest"
-            or task.startswith("Deposit useless items into the chest at")
-        ):
-            observation += self.render_chest_observation()
-
-        observation += f"Task: {task}\n\n"
-
-        if context:
-            observation += f"Context: {context}\n\n"
-        else:
-            observation += f"Context: None\n\n"
-
-        if critique:
-            observation += f"Critique: {critique}\n\n"
-        else:
-            observation += f"Critique: None\n\n"
+        # Use shared formatter to create observation string
+        observation = ObservationFormatter.format_for_action(
+            world=world,
+            code=code,
+            task=task,
+            context=context,
+            critique=critique,
+            include_errors=self.execution_error,
+            include_chat=self.chat_log,
+            chat_messages=chat_messages,
+            error_messages=error_messages
+        )
 
         return HumanMessage(content=observation)
 
@@ -254,16 +189,73 @@ class ActionAgent:
                 ), f"Main function {main_function['name']} must take a single argument named 'bot'"
                 program_code = "\n\n".join(function["body"] for function in functions)
                 exec_code = f"await {main_function['name']}(bot);"
+
+                # Check if this is a one-line primitive call
+                is_one_line_primitive = self._is_one_line_primitive(parsed, main_function)
+
                 return {
                     "program_code": program_code,
                     "program_name": main_function["name"],
                     "exec_code": exec_code,
+                    "is_one_line_primitive": is_one_line_primitive,
                 }
             except Exception as e:
                 retry -= 1
                 error = e
                 time.sleep(1)
         return f"Error parsing action response (before program execution): {error}"
+
+    def _is_one_line_primitive(self, parsed_code, main_function):
+        """
+        Check if the main function body contains only a single statement that is
+        a direct call to a primitive or known skill (not a new skill worth saving).
+
+        Returns True if:
+        - The function body has exactly 1 statement
+        - That statement is a return/expression statement with an await call
+        """
+        try:
+            babel = require("@babel/core")
+
+            # Find the main function's AST node
+            main_func_node = None
+            for node in parsed_code.program.body:
+                if (node.type == "FunctionDeclaration" and
+                    hasattr(node, 'id') and
+                    node.id.name == main_function["name"]):
+                    main_func_node = node
+                    break
+
+            if not main_func_node:
+                return False
+
+            # Check the function body
+            body_statements = list(main_func_node.body.body)
+
+            # Filter out empty statements or pure comments
+            actual_statements = [
+                stmt for stmt in body_statements
+                if stmt.type not in ["EmptyStatement"]
+            ]
+
+            # Must be exactly 1 statement
+            if len(actual_statements) != 1:
+                return False
+
+            stmt = actual_statements[0]
+
+            # Check if it's a return statement with await, or expression statement with await
+            if stmt.type == "ReturnStatement":
+                return stmt.argument and stmt.argument.type == "AwaitExpression"
+            elif stmt.type == "ExpressionStatement":
+                return stmt.expression.type == "AwaitExpression"
+
+            return False
+
+        except Exception as e:
+            # If we can't parse it properly, assume it's not a one-liner
+            print(f"\033[33mWarning: Could not check if one-line primitive: {e}\033[0m")
+            return False
 
     def summarize_chatlog(self, events):
         def filter_item(message: str):

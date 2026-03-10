@@ -6,7 +6,7 @@ function failedCraftFeedback(bot, name, item, craftingTable) {
         const recipes = bot.recipesAll(
             item.id,
             null,
-            mcData.blocksByName.crafting_table.id
+            craftingTable
         );
         // find the recipe with the fewest missing ingredients
         var min = 999;

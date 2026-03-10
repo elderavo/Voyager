@@ -309,17 +309,49 @@ app.post("/step", async (req, res) => {
         }
     }
 
+
     function returnItems() {
-        bot.chat("/gamerule doTileDrops false");
+        // Do NOT delete crafting tables the bot placed.
+        // Do NOT give a new one every step.
+        // Only ensure the bot has exactly ONE crafting table in inventory.
+
+
+
+
+
+        // Leave furnace logic exactly as-is or comment it out similarly.
+    }
+
+
+
+    function returnItems() {
+        //bot.chat("/gamerule doTileDrops false");
         const crafting_table = bot.findBlock({
             matching: mcData.blocksByName.crafting_table.id,
             maxDistance: 128,
         });
+
+
+        //// New logic to fix removing craftin tables
+        // Bot will always just be given a crafting table
+        const tables = bot.inventory.items().filter(i => i.name === "crafting_table");
+        const count = tables.reduce((s,i)=>s+i.count,0);
+
+
+        if (count === 0) {
+            bot.chat("/give @s crafting_table 1");
+        }
+        if (count > 1) {
+            //bot.chat(`/clear @s minecraft:crafting_table`);
+            //bot.chat("/give @s crafting_table 1");
+        }
+        /// end new logic
+
         if (crafting_table) {
-            bot.chat(
-                `/setblock ${crafting_table.position.x} ${crafting_table.position.y} ${crafting_table.position.z} air destroy`
-            );
-            bot.chat("/give @s crafting_table");
+            //bot.chat(
+                //`/setblock ${crafting_table.position.x} ${crafting_table.position.y} ${crafting_table.position.z} air destroy`
+            //);
+            //bot.chat("/give @s crafting_table");
         }
         const furnace = bot.findBlock({
             matching: mcData.blocksByName.furnace.id,
@@ -344,7 +376,7 @@ app.post("/step", async (req, res) => {
         ) {
             bot.chat("/give @s iron_pickaxe");
         }
-        bot.chat("/gamerule doTileDrops true");
+        // bot.chat("/gamerule doTileDrops true");
     }
 
     function handleError(err) {
@@ -426,6 +458,22 @@ app.post("/pause", (req, res) => {
     bot.waitForTicks(bot.waitTicks).then(() => {
         res.json({ message: "Success" });
     });
+});
+
+app.post("/unpause", (req, res) => {
+    if (!bot) {
+        res.status(400).json({ error: "Bot not spawned" });
+        return;
+    }
+    bot.chat("/pause");  // In Minecraft, /pause is a toggle, but we use it to unpause
+    bot.waitForTicks(bot.waitTicks).then(() => {
+        res.json({ message: "Success" });
+    });
+});
+
+app.get("/health", (req, res) => {
+    // Health check endpoint - returns 200 if server is up
+    res.json({ status: "ok" });
 });
 
 // Server listening to PORT 3000

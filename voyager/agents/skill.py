@@ -29,7 +29,6 @@ class SkillManager:
             request_timeout=http_timeout,
         )
         U.f_mkdir(f"{ckpt_dir}/skill/code")
-        U.f_mkdir(f"{ckpt_dir}/skill/description")
         U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
         # programs for env execution
         self.control_primitives = load_control_primitives()
@@ -62,45 +61,109 @@ class SkillManager:
         return programs
 
     def add_new_skill(self, info):
+        
+        # === SHOULD WE SAVE THIS SKILL? ===========================================
+        # 1. Skip deposits (not reusable)
         if info["task"].startswith("Deposit useless items into the chest at"):
-            # No need to reuse the deposit skill
             return
+
         program_name = info["program_name"]
         program_code = info["program_code"]
-        skill_description = self.generate_skill_description(program_name, program_code)
-        print(
-            f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"
-        )
+
+        # 2. Skip saving *only when explicitly marked* as a primitive
+        #    Default = False → treat as a full skill unless ActionAgent explicitly says otherwise
+        is_primitive = info.get("is_one_line_primitive", False)
+        if is_primitive:
+            print(f"[DEBUG] Not saving primitive skill: {program_name}")
+            return
+
+        # 3. Check if skill already persisted to disk
+        code_file_exists = os.path.exists(f"{self.ckpt_dir}/skill/code/{program_name}.js")
+
+        # If skill exists in memory AND on disk with identical code → skip save
+        if program_name in self.skills and code_file_exists:
+            existing = self.skills[program_name]["code"]
+            if existing.strip() == program_code.strip():
+                # Already persisted, nothing to do
+                return
+
+        # 4. If skill exists but code differs → ONLY rewrite if "force_relearn" flag is set
+        force_relearn = info.get("force_relearn", False)
+        if program_name in self.skills and code_file_exists and not force_relearn:
+            print(f"[DEBUG] Skill {program_name} exists but no force_relearn flag — NOT overwriting.")
+            return
+
+        # 5. Determine dumped program name (version if overwriting)
         if program_name in self.skills:
-            print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
-            self.vectordb._collection.delete(ids=[program_name])
+            print(f"[DEBUG] force_relearn=True → rewriting skill {program_name}")
             i = 2
             while f"{program_name}V{i}.js" in os.listdir(f"{self.ckpt_dir}/skill/code"):
                 i += 1
             dumped_program_name = f"{program_name}V{i}"
         else:
             dumped_program_name = program_name
-        self.vectordb.add_texts(
-            texts=[skill_description],
-            ids=[program_name],
-            metadatas=[{"name": program_name}],
-        )
-        self.skills[program_name] = {
-            "code": program_code,
-            "description": skill_description,
-        }
-        assert self.vectordb._collection.count() == len(
-            self.skills
-        ), "vectordb is not synced with skills.json"
-        U.dump_text(
-            program_code, f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js"
-        )
-        U.dump_text(
-            skill_description,
-            f"{self.ckpt_dir}/skill/description/{dumped_program_name}.txt",
-        )
-        U.dump_json(self.skills, f"{self.ckpt_dir}/skill/skills.json")
-        self.vectordb.persist()
+
+
+        # === TRANSACTIONAL WRITE PHASE ===
+        # 1. Write to temporary files first
+        code_tmp_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js.tmp"
+        json_tmp_path = f"{self.ckpt_dir}/skill/skills.json.tmp"
+
+        try:
+            # Write code to temp file
+            U.dump_text(program_code, code_tmp_path)
+
+            # Create updated skills dict and write to temp JSON
+            # Only store code - no description required
+            skills_tmp = dict(self.skills)
+            skills_tmp[program_name] = {
+                "code": program_code,
+            }
+            U.dump_json(skills_tmp, json_tmp_path)
+
+            # 2. Update vectordb (if rewriting, delete old entry first)
+            # Use program_name as the searchable text for retrieval
+            if program_name in self.skills:
+                self.vectordb._collection.delete(ids=[program_name])
+
+            self.vectordb.add_texts(
+                texts=[program_name],
+                ids=[program_name],
+                metadatas=[{"name": program_name}],
+            )
+
+            # 3. Commit: update in-memory state
+            self.skills = skills_tmp
+
+            # 4. Commit: rename temp files to final files
+            code_final_path = f"{self.ckpt_dir}/skill/code/{dumped_program_name}.js"
+            json_final_path = f"{self.ckpt_dir}/skill/skills.json"
+
+            if os.path.exists(code_final_path):
+                os.remove(code_final_path)
+            os.rename(code_tmp_path, code_final_path)
+
+            if os.path.exists(json_final_path):
+                os.remove(json_final_path)
+            os.rename(json_tmp_path, json_final_path)
+
+            # 5. Persist vectordb
+            self.vectordb.persist()
+
+            # Verify sync
+            assert self.vectordb._collection.count() == len(
+                self.skills
+            ), "vectordb is not synced with skills.json"
+
+            print(f"\033[32mSkill Manager successfully saved {program_name} (as {dumped_program_name})\033[0m")
+
+        except Exception as e:
+            # Rollback: clean up temp files on failure
+            print(f"\033[31mSkill Manager failed to save {program_name}: {e}\033[0m")
+            for tmp_path in [code_tmp_path, json_tmp_path]:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            raise
 
     def generate_skill_description(self, program_name, program_code):
         messages = [
