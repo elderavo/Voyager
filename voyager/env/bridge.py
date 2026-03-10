@@ -1,3 +1,4 @@
+import enum
 import os.path
 import time
 import warnings
@@ -7,12 +8,17 @@ import requests
 import json
 
 import gymnasium as gym
-from gymnasium.core import ObsType 
+from gymnasium.core import ObsType
 
 import voyager.utils as U
 
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
+
+
+class ResetMode(str, enum.Enum):
+    HARD = "hard"
+    SOFT = "soft"
 
 
 class VoyagerEnv(gym.Env):
@@ -22,10 +28,14 @@ class VoyagerEnv(gym.Env):
         mc_port=None,
         azure_login=None,
         server_host="http://127.0.0.1",
-        server_port=3001,
+        server_port=None,
         step_timeout=600,
         log_path="./logs",
     ):
+        if server_port is None:
+            from voyager.config import config
+            server_port = config.MINEFLAYER_PORT
+
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
         if mc_port and azure_login:
@@ -169,13 +179,17 @@ class VoyagerEnv(gym.Env):
         if options is None:
             options = {}
 
-        if options.get("inventory", {}) and options.get("mode", "hard") != "hard":
+        reset_mode = options.get("mode", ResetMode.HARD)
+        if isinstance(reset_mode, str):
+            reset_mode = ResetMode(reset_mode)
+
+        if options.get("inventory", {}) and reset_mode != ResetMode.HARD:
             raise RuntimeError("inventory can only be set when options is hard")
 
         self.reset_options = {
             "host": self.mc_host,
             "port": self.mc_port,
-            "reset": options.get("mode", "hard"),
+            "reset": reset_mode.value,
             "inventory": options.get("inventory", {}),
             "equipment": options.get("equipment", []),
             "spread": options.get("spread", False),
@@ -191,7 +205,7 @@ class VoyagerEnv(gym.Env):
         self.has_reset = True
         self.connected = True
         # All the reset in step will be soft
-        self.reset_options["reset"] = "soft"
+        self.reset_options["reset"] = ResetMode.SOFT.value
         self.pause()
 
         # Handle double-encoded JSON properly

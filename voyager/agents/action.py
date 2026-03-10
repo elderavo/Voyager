@@ -84,7 +84,6 @@ class ActionAgent:
 
     def render_system_message(self, skills=[]):
         system_template = load_prompt("action_template")
-        # FIXME: Hardcoded control_primitives
         base_skills = [
             "exploreUntil",
             "mineBlock",
