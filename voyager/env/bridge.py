@@ -1,3 +1,4 @@
+import enum
 import os.path
 import time
 import warnings
@@ -11,9 +12,14 @@ import voyager.utils as U
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
 
-# Reset mode constants
+# Reset mode constants (kept for backward compatibility)
 HARD_RESET = "hard"
 SOFT_RESET = "soft"
+
+
+class ResetMode(str, enum.Enum):
+    HARD = "hard"
+    SOFT = "soft"
 
 
 class VoyagerEnv:
@@ -34,10 +40,14 @@ class VoyagerEnv:
         mc_port=None,
         azure_login=None,
         server_host="http://127.0.0.1",
-        server_port=3001,
+        server_port=None,
         step_timeout=600,
         log_path="./logs",
     ):
+        if server_port is None:
+            from voyager.config import config
+            server_port = config.MINEFLAYER_PORT
+
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
         if mc_port and azure_login:
@@ -288,15 +298,17 @@ class VoyagerEnv:
         if options is None:
             options = {}
 
-        mode = options.get("mode", HARD_RESET)
+        reset_mode = options.get("mode", ResetMode.HARD)
+        if isinstance(reset_mode, str):
+            reset_mode = ResetMode(reset_mode)
 
-        if options.get("inventory", {}) and mode != HARD_RESET:
+        if options.get("inventory", {}) and reset_mode != ResetMode.HARD:
             raise RuntimeError("inventory can only be set when mode is 'hard'")
 
         self.reset_options = {
             "host": self.mc_host,
             "port": self.mc_port,
-            "reset": mode,  # Explicit mode - no hidden mutation
+            "reset": reset_mode.value,  # Explicit mode - no hidden mutation
             "inventory": options.get("inventory", {}),
             "equipment": options.get("equipment", []),
             "spread": options.get("spread", False),
