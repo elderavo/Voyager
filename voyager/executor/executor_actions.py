@@ -8,7 +8,9 @@ This module contains functions for direct execution of:
 """
 
 import re
-from typing import List, Tuple, Any, Dict
+from typing import List, Any
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
 from .executor_utils import ExecutorUtils
 
 
@@ -28,7 +30,7 @@ class ExecutorActions:
         self.skill_manager = skill_manager
         self.utils = utils
 
-    def execute_skill(self, skill_name: str) -> Tuple[bool, List[Any]]:
+    def execute_skill(self, skill_name: str) -> ExecutionResult:
         """
         Execute an existing JavaScript skill.
 
@@ -36,11 +38,14 @@ class ExecutorActions:
             skill_name: Name of the skill to execute (e.g., "craftPlanks")
 
         Returns:
-            (success: bool, events: List)
+            ExecutionResult with success flag and trace
         """
         if skill_name not in self.skill_manager.skills:
             print(f"\033[31mSkill '{skill_name}' not found in skill library\033[0m")
-            return False, []
+            return ExecutionResult(
+                success=False,
+                trace=Trace.from_events([])
+            )
 
         print(f"\033[36mExecuting skill: {skill_name}\033[0m")
 
@@ -54,14 +59,30 @@ class ExecutorActions:
         # Check success (no errors in events)
         success = self.utils.check_execution_success(events)
 
-        return success, events
+        return ExecutionResult(
+            success=success,
+            trace=Trace.from_events(events)
+        )
 
-    def direct_execute_craft(self, item_name: str):
+    def direct_execute_craft(self, item_name: str) -> ExecutionResult:
+        """
+        Directly execute the craftItem primitive.
+
+        Args:
+            item_name: Item to craft
+
+        Returns:
+            ExecutionResult with success flag and trace
+        """
         code = f"await craftItem(bot, '{item_name}', 1);"
         events = self.env.step(code, programs=self.skill_manager.programs)
-        return self.utils.check_execution_success(events), events
+        success = self.utils.check_execution_success(events)
+        return ExecutionResult(
+            success=success,
+            trace=Trace.from_events(events)
+        )
 
-    def direct_execute_gather(self, item_name: str, count: int = 1) -> Tuple[bool, List[Any]]:
+    def direct_execute_gather(self, item_name: str, count: int = 1) -> ExecutionResult:
         """
         Directly execute mineBlock primitive.
 
@@ -70,14 +91,17 @@ class ExecutorActions:
             count: Number to gather
 
         Returns:
-            (success: bool, events: List)
+            ExecutionResult with success flag and trace
         """
         code = f"await mineBlock(bot, '{item_name}', {count});"
         events = self.env.step(code=code, programs=self.skill_manager.programs)
         success = self.utils.check_execution_success(events)
-        return success, events
+        return ExecutionResult(
+            success=success,
+            trace=Trace.from_events(events)
+        )
 
-    def craft_item(self, item_name: str, task_type: str = "craft") -> Tuple[bool, List[Any], str]:
+    def craft_item(self, item_name: str, task_type: str = "craft"):
         """
         High-level helper to craft an item WITH QUANTITY SUPPORT.
         Always returns (success, events, normalized_name).
@@ -89,7 +113,7 @@ class ExecutorActions:
         # class which has access to both actions and skills modules
         raise NotImplementedError("craft_item should be called from main Executor class")
 
-    def direct_mine(self, item_name: str, count: int = 1, task_type: str = "mine") -> Tuple[bool, List[Any]]:
+    def direct_mine(self, item_name: str, count: int = 1, task_type: str = "mine") -> ExecutionResult:
         """
         Direct mining primitive, bypasses skill synthesis and crafting logic.
 
@@ -102,7 +126,7 @@ class ExecutorActions:
             task_type: Type of task (should be "mine")
 
         Returns:
-            (success: bool, events: List)
+            ExecutionResult with success flag and trace
         """
         print(f"\033[36m[DEBUG] Direct mining: {count} x {item_name}\033[0m")
 
@@ -120,17 +144,28 @@ class ExecutorActions:
             # Try using the raw name as fallback
             normalized_name = item_name.lower().replace(" ", "_")
 
-        success, events = self.direct_execute_gather(normalized_name, count)
-        return success, events
+        return self.direct_execute_gather(normalized_name, count)
 
-    def direct_place_item(self, item_name: str) -> Tuple[bool, List[Any]]:
+    def direct_place_item(self, item_name: str) -> ExecutionResult:
+        """
+        Directly place an item adjacent to the bot.
+
+        Args:
+            item_name: Item to place
+
+        Returns:
+            ExecutionResult with success flag and trace
+        """
         code = (
             "const pos = bot.entity.position.offset(1, 0, 0);"
             f"await placeItem(bot, '{item_name}', pos);"
-)
+        )
         events = self.env.step(code=code, programs=self.skill_manager.programs)
         success = self.utils.check_execution_success(events)
-        return success, events
+        return ExecutionResult(
+            success=success,
+            trace=Trace.from_events(events)
+        )
 
     def get_source_blocks_for_item(self, item_name: str) -> List[str]:
         """

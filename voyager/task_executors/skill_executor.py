@@ -5,7 +5,9 @@ Executes existing JavaScript skills from the skill library.
 """
 
 from typing import Any
-from .base_executor import TaskExecutor, ExecutionResult
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
+from .base_executor import TaskExecutor
 from ..task_spec import TaskSpec
 
 
@@ -42,7 +44,7 @@ class SkillExecutor(TaskExecutor):
         if not skill_name:
             return ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=["No skill name provided in execution plan"]
             )
 
@@ -58,7 +60,7 @@ class SkillExecutor(TaskExecutor):
 
             return ExecutionResult(
                 success=success,
-                events=events if events else [],
+                trace=Trace.from_events(events if events else []),
                 program_code=program_code,
                 program_name=skill_name,
                 is_one_line_primitive=False  # Skills are not primitives
@@ -67,6 +69,6 @@ class SkillExecutor(TaskExecutor):
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=[f"Skill execution error: {str(e)}"]
             )

@@ -6,7 +6,9 @@ Handles crafting, mining, smelting, and other primitive operations.
 """
 
 from typing import Any
-from .base_executor import TaskExecutor, ExecutionResult
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
+from .base_executor import TaskExecutor
 from ..task_spec import TaskSpec, TaskType
 
 
@@ -55,7 +57,7 @@ class PrimitiveExecutor(TaskExecutor):
         else:
             return ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=[f"Unsupported primitive task type: {task_spec.type}"]
             )
 
@@ -97,7 +99,7 @@ class PrimitiveExecutor(TaskExecutor):
 
             return ExecutionResult(
                 success=success,
-                events=events if events else [],
+                trace=Trace.from_events(events if events else []),
                 program_code=program_code,
                 program_name=program_name,
                 is_one_line_primitive=False,  # Crafting can be complex
@@ -107,7 +109,7 @@ class PrimitiveExecutor(TaskExecutor):
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=[f"Crafting error: {str(e)}"]
             )
 
@@ -129,14 +131,14 @@ class PrimitiveExecutor(TaskExecutor):
 
             return ExecutionResult(
                 success=success,
-                events=events if events else [],
+                trace=Trace.from_events(events if events else []),
                 is_one_line_primitive=True  # Mining is always primitive
             )
 
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=[f"Mining error: {str(e)}"]
             )
 
@@ -148,6 +150,6 @@ class PrimitiveExecutor(TaskExecutor):
         """
         return ExecutionResult(
             success=False,
-            events=[],
+            trace=Trace.from_events([]),
             errors=["Smelting not yet implemented"]
         )
