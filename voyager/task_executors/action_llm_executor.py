@@ -6,7 +6,9 @@ Wraps the existing action agent loop with critic feedback and retries.
 """
 
 from typing import Any
-from .base_executor import TaskExecutor, ExecutionResult
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
+from .base_executor import TaskExecutor
 from ..task_spec import TaskSpec
 
 
@@ -138,7 +140,7 @@ class ActionLLMExecutor(TaskExecutor):
 
         return ExecutionResult(
             success=success,
-            events=last_events if last_events else [],
+            trace=Trace.from_events(last_events if last_events else []),
             program_code=program_code,
             program_name=program_name,
             is_one_line_primitive=False,  # LLM-generated code is not primitive

@@ -70,11 +70,11 @@ def learn_v2(self, reset_env=True):
             print(f"\033[31m[V2] Execution error: {e}\033[0m")
             import traceback
             traceback.print_exc()
-            # Import ExecutionResult if needed
-            from .task_executors import ExecutionResult
+            from voyager.types import ExecutionResult
+            from voyager.trace import Trace
             result = ExecutionResult(
                 success=False,
-                events=[],
+                trace=Trace.from_events([]),
                 errors=[str(e)]
             )
 

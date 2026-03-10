@@ -53,6 +53,7 @@ class Executor:
         self.utils = ExecutorUtils(env, skill_manager)
         self.actions = ExecutorActions(env, skill_manager, self.utils)
         self.skills = ExecutorSkills(env, skill_manager, self.utils, max_recursion_depth)
+        self.executor_skills = self.skills  # alias used by PrimitiveExecutor
 
         print(f"\033[36mExecutor initialized with max recursion depth: {max_recursion_depth}\033[0m")
 
@@ -64,11 +65,10 @@ class Executor:
             skill_name: Name of the skill to execute (e.g., "craftPlanks")
 
         Returns:
-            (success: bool, events: List)
+            (success: bool, events: List)  — backward-compat tuple
         """
-        success, events = self.actions.execute_skill(skill_name)
-
-        return success, events
+        result = self.actions.execute_skill(skill_name)
+        return result.success, result.events
 
     def _get_item_count(self, item_name: str) -> int:
         """
@@ -208,9 +208,10 @@ class Executor:
             task_type: Type of task (should be "mine")
 
         Returns:
-            (success: bool, events: List)
+            (success: bool, events: List)  — backward-compat tuple
         """
-        return self.actions.direct_mine(item_name, count, task_type)
+        result = self.actions.direct_mine(item_name, count, task_type)
+        return result.success, result.events
 
     # Expose utility methods for backward compatibility
     def _normalize_item_name(self, raw_name: str) -> Optional[str]:
@@ -235,11 +236,13 @@ class Executor:
 
     def _direct_execute_craft(self, item_name: str) -> Tuple[bool, List[Any]]:
         """Direct craft execution (backward compatibility)."""
-        return self.actions.direct_execute_craft(item_name)
+        result = self.actions.direct_execute_craft(item_name)
+        return result.success, result.events
 
     def _direct_execute_gather(self, item_name: str, count: int = 1) -> Tuple[bool, List[Any]]:
         """Direct gather execution (backward compatibility)."""
-        return self.actions.direct_execute_gather(item_name, count)
+        result = self.actions.direct_execute_gather(item_name, count)
+        return result.success, result.events
 
     def _synthesize_skill(self, skill_name: str, execution_sequence: List[ExecutionStep]):
         """Synthesize skill (backward compatibility)."""

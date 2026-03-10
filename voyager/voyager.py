@@ -21,11 +21,12 @@ from .execution_plan import ExecutionPlan, ExecutionMode
 from .execution_router import ExecutionRouter
 from .world_state_tracker import WorldStateTracker
 from .reset_manager import ResetManager, ResetMode
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
 from .task_executors import (
     PrimitiveExecutor,
     SkillExecutor,
     ActionLLMExecutor,
-    ExecutionResult,
 )
 
 
@@ -608,7 +609,7 @@ class Voyager:
                 traceback.print_exc()
                 result = ExecutionResult(
                     success=False,
-                    events=[],
+                    trace=Trace.from_events([]),
                     errors=[str(e)]
                 )
 

@@ -10,6 +10,8 @@ This module contains functions for:
 
 from typing import List, Tuple, Optional, Any
 from dataclasses import dataclass, field
+from voyager.types import ExecutionResult
+from voyager.trace import Trace
 from .executor_utils import ExecutorUtils
 
 
@@ -72,8 +74,8 @@ class ExecutorSkills:
         # If known, validate skill BEFORE using it
         # -----------------------------------------------------------
         if skill_name in self.skill_manager.skills:
-            ok, _ = actions_executor.execute_skill(skill_name)
-            if ok:
+            result = actions_executor.execute_skill(skill_name)
+            if result.success:
                 return True, [ExecutionStep("skill", skill_name, [], success=True)]
             else:
                 print(f"[WARN] Skill '{skill_name}' failed → rediscovering")
@@ -99,9 +101,9 @@ class ExecutorSkills:
             # -------------------------------------------------------
             # Attempt direct craft
             # -------------------------------------------------------
-            success, events = actions_executor.direct_execute_craft(item_name)
+            result = actions_executor.direct_execute_craft(item_name)
 
-            if success:
+            if result.success:
                 # finalize this attempt's execution sequence
                 scratch.append(
                     ExecutionStep("primitive", "craftItem", [item_name, "1"], success=True)
@@ -122,10 +124,10 @@ class ExecutorSkills:
 
                 return True, [ExecutionStep("skill", skill_name, [], success=True)]
 
-
             # -------------------------------------------------------
-            # Missing deps
+            # Missing deps — read events from the trace
             # -------------------------------------------------------
+            events = result.events
             deps = self.utils.parse_dependencies(events)
             if not deps:
                 print(f"[ERR] Cannot craft {item_name}: no dependencies to resolve")
@@ -199,8 +201,8 @@ class ExecutorSkills:
             for i in range(count):
                 # Known skill
                 if skill_name in self.skill_manager.skills:
-                    ok, _ = actions_executor.execute_skill(skill_name)
-                    if ok:
+                    result = actions_executor.execute_skill(skill_name)
+                    if result.success:
                         all_steps.append(ExecutionStep("skill", skill_name, [], success=True))
                         continue
                     else:
@@ -228,8 +230,8 @@ class ExecutorSkills:
         blocks = actions_executor.get_source_blocks_for_item(dep)
         if blocks:
             for blk in blocks[:3]:
-                ok, _ = actions_executor.direct_execute_gather(blk, count=count)
-                if ok:
+                result = actions_executor.direct_execute_gather(blk, count=count)
+                if result.success:
                     return True, [
                         ExecutionStep("primitive", "mineBlock", [blk, str(count)], success=True)
                     ]

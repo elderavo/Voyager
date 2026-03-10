@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 import re
 
+from voyager.types import ExecutionResult  # noqa: F401 — canonical definition; re-exported here for backward compat
+
 
 @dataclass
 class WorldState:
@@ -340,36 +342,6 @@ class ObservationFormatter:
             parts.append(f"Context: {context}")
 
         return "\n\n".join(parts)
-
-
-@dataclass
-class ExecutionResult:
-    """
-    Unified execution result container.
-
-    Used by executors and Voyager to represent the outcome of task execution
-    with consistent structure across all execution modes.
-    """
-    success: bool
-    events: List[Any]
-    world_state: Optional[WorldState] = None
-    errors: List[str] = field(default_factory=list)
-    program_code: Optional[str] = None
-    program_name: Optional[str] = None
-    is_one_line_primitive: bool = False
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    conversations: List[Any] = field(default_factory=list)
-
-    def __repr__(self) -> str:
-        status = "SUCCESS" if self.success else "FAILED"
-        parts = [f"status={status}", f"events={len(self.events)}"]
-        if self.program_name:
-            parts.append(f"program={self.program_name}")
-        if self.is_one_line_primitive:
-            parts.append("primitive")
-        if self.errors:
-            parts.append(f"errors={len(self.errors)}")
-        return f"ExecutionResult({', '.join(parts)})"
 
 
 class LLMJsonParser:
