@@ -10,6 +10,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives_context import load_control_primitives_context
+from voyager.utils import get_logger
+
+logger = get_logger(__name__)
+
 
 class ActionAgent:
     def __init__(
@@ -29,21 +33,15 @@ class ActionAgent:
         U.f_mkdir(f"{ckpt_dir}/action")
 
         if resume:
-            print(f"\033[32mLoading Action Agent from {ckpt_dir}/action\033[0m")
+            logger.info(f"Loading Action Agent from {ckpt_dir}/action")
             self.chest_memory = U.load_json(f"{ckpt_dir}/action/chest_memory.json")
         else:
             self.chest_memory = {}
 
-        # ---- Modern LangChain + OpenAI client usage ----
-        #
-        # 1. `ChatOpenAI` now uses `model=` consistently.
-        # 2. Timeouts are configured via the HTTP client settings.
-        #
         self.llm = ChatOpenAI(
             model=model,
             temperature=temperature,
             max_retries=3,
-            # Set timeout via request_timeout parameter
             request_timeout=http_timeout,
         )
         self.model = model
@@ -54,13 +52,11 @@ class ActionAgent:
                 if isinstance(chest, dict):
                     self.chest_memory[position] = chest
                 if chest == "Invalid":
-                    print(
-                        f"\033[32mAction Agent removing chest {position}: {chest}\033[0m"
-                    )
+                    logger.info(f"Removing chest {position}: {chest}")
                     self.chest_memory.pop(position)
             else:
                 if chest != "Invalid":
-                    print(f"\033[32mAction Agent saving chest {position}: {chest}\033[0m")
+                    logger.info(f"Saving chest {position}: {chest}")
                     self.chest_memory[position] = chest
         U.dump_json(self.chest_memory, f"{self.ckpt_dir}/action/chest_memory.json")
 
@@ -192,7 +188,6 @@ class ActionAgent:
                 observation += f"Chat log: None\n\n"
 
         observation += f"Biome: {biome}\n\n"
-
         observation += f"Time: {time_of_day}\n\n"
 
         if voxels:
@@ -209,11 +204,8 @@ class ActionAgent:
             observation += f"Nearby entities (nearest to farthest): None\n\n"
 
         observation += f"Health: {health:.1f}/20\n\n"
-
         observation += f"Hunger: {hunger:.1f}/20\n\n"
-
         observation += f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n"
-
         observation += f"Equipment: {equipment}\n\n"
 
         if inventory:
@@ -326,9 +318,6 @@ class ActionAgent:
         """
         Request action from LLM in JSON format instead of code generation.
 
-        This replaces the old code-generation pipeline with a structured
-        intention + dependency response format.
-
         Args:
             messages: List of LangChain messages for the LLM
 
@@ -339,21 +328,12 @@ class ActionAgent:
             ValueError: If LLM does not produce valid JSON
         """
         response = self.llm.invoke(messages).content
-
-        print(f"\033[33m****Action Agent LLM Response****\n{response}\033[0m")
+        logger.debug("Action Agent LLM response:\n%s", response, extra={"llm": True})
 
         try:
-            # Try to extract JSON from markdown code blocks if present
             json_pattern = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
             json_matches = json_pattern.findall(response)
-
-            if json_matches:
-                # Use the first JSON block found
-                json_str = json_matches[0]
-            else:
-                # Assume the entire response is JSON
-                json_str = response
-
+            json_str = json_matches[0] if json_matches else response
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
             raise ValueError(f"LLM did not produce valid JSON: {e}\nResponse: {response}")
@@ -366,10 +346,10 @@ class ActionAgent:
         if not intention:
             raise ValueError("JSON response missing 'intention' field")
 
-        print(f"\033[32m****Parsed Action****")
-        print(f"Intention: {intention}")
-        print(f"Primitive Actions: {primitive}")
-        print(f"Missing Dependencies: {missing}")
-        print(f"Notes: {notes}\033[0m")
+        logger.info(
+            f"Parsed action — intention: {intention} | primitives: {primitive} | missing: {missing}"
+        )
+        if notes:
+            logger.debug(f"Action notes: {notes}")
 
         return intention, primitive, missing

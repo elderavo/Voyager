@@ -4,6 +4,24 @@ const bodyParser = require("body-parser");
 const mineflayer = require("mineflayer");
 const { mineflayer: mineflayerViewer } = require("prismarine-viewer");
 
+// ---------------------------------------------------------------------------
+// Structured logger — stdout captured by Python SubprocessMonitor → mineflayer.log
+// Format: ISO timestamp | LEVEL | [mineflayer] message
+// ---------------------------------------------------------------------------
+const log = {
+    _write(level, msg, ...args) {
+        const ts = new Date().toISOString();
+        const extra = args.length
+            ? " " + args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ")
+            : "";
+        process.stdout.write(`${ts} | ${level.padEnd(5)} | [mineflayer] ${msg}${extra}\n`);
+    },
+    debug: (msg, ...args) => log._write("DEBUG", msg, ...args),
+    info:  (msg, ...args) => log._write("INFO",  msg, ...args),
+    warn:  (msg, ...args) => log._write("WARN",  msg, ...args),
+    error: (msg, ...args) => log._write("ERROR", msg, ...args),
+};
+
 const skills = require("./lib/skillLoader");
 const { initCounter, getNextTime } = require("./lib/utils");
 const obs = require("./lib/observation/base");
@@ -26,11 +44,12 @@ app.use(bodyParser.urlencoded({ limit: "50mb", extended: false }));
 app.post("/start", (req, res) => {
     if (bot) onDisconnect("Restarting bot");
     bot = null;
-    console.log(req.body);
+    log.debug("POST /start", req.body);
     bot = mineflayer.createBot({
         host: req.body.host || "localhost", // minecraft server ip
         port: req.body.port, // minecraft server port
-        username: "bot",
+        username: req.body.username || "bot",
+        auth: req.body.auth || "offline",
         disableChatSigning: true,
         checkTimeoutInterval: 60 * 60 * 1000,
     });
@@ -143,11 +162,11 @@ app.post("/start", (req, res) => {
         // Initialize prismarine-viewer so you can watch the bot in a browser
         // Access at http://localhost:3007 in your web browser
         bot.viewer = mineflayerViewer(bot, { port: 3007, firstPerson: true });
-        console.log("Prismarine viewer started on http://localhost:3007");
+        log.info("Prismarine viewer started on http://localhost:3007");
     });
 
     function onConnectionFailed(e) {
-        console.log(e);
+        log.error("Bot connection failed:", e.message || String(e));
         bot = null;
         res.status(400).json({ error: e });
     }
@@ -156,7 +175,7 @@ app.post("/start", (req, res) => {
             bot.viewer.close();
         }
         bot.end();
-        console.log(message);
+        log.warn("Bot disconnected:", message);
         bot = null;
     }
 });
@@ -165,7 +184,7 @@ app.post("/step", async (req, res) => {
     // import useful package
     let response_sent = false;
     function otherError(err) {
-        console.log("Uncaught Error");
+        log.error("Uncaught error in /step handler:", err.message || String(err));
         bot.emit("error", handleError(err));
         bot.waitForTicks(bot.waitTicks).then(() => {
             if (!response_sent) {
@@ -352,7 +371,7 @@ app.post("/step", async (req, res) => {
         if (!stack) {
             return err;
         }
-        console.log(stack);
+        log.error("Execution error stack:", stack);
         const final_line = stack.split("\n")[1];
         const regex = /<anonymous>:(\d+):\d+\)/;
 
@@ -449,14 +468,10 @@ app.post("/registry", (req, res) => {
                 res.json(block || null);
             } else if (type === "recipes") {
                 const item = mcData.itemsByName[name];
-                console.log(`[Registry] Looking up recipes for "${name}"`);
-                console.log(`[Registry] Item found in mcData:`, item ? `ID=${item.id}, name=${item.name}` : 'null');
-
-                // Check if bot has recipe data loaded
-                if (bot.recipesFor) {
-                    console.log(`[Registry] bot.recipesFor is available`);
-                } else {
-                    console.log(`[Registry] ERROR: bot.recipesFor is NOT available`);
+                log.debug(`Registry recipe lookup: "${name}"`);
+                log.debug(`Registry item in mcData:`, item ? `ID=${item.id}, name=${item.name}` : "null");
+                if (!bot.recipesFor) {
+                    log.error("bot.recipesFor is NOT available");
                 }
 
                 if (item) {
@@ -465,25 +480,25 @@ app.post("/registry", (req, res) => {
                         matching: mcData.blocksByName.crafting_table?.id,
                         maxDistance: 32
                     });
-                    console.log(`[Registry] Crafting table available:`, craftingTable ? 'yes' : 'no');
+                    log.debug(`Registry crafting table available:`, craftingTable ? "yes" : "no");
 
                     // Try without crafting table first (for 2x2 recipes)
                     let recipes = null;
                     try {
                         recipes = bot.recipesFor(item.id, null, 1, null);
-                        console.log(`[Registry] bot.recipesFor(without table) returned:`, recipes ? `${recipes.length} recipes` : 'null');
+                        log.debug(`Registry recipesFor (no table):`, recipes ? `${recipes.length} recipes` : "null");
                     } catch (err) {
-                        console.log(`[Registry] ERROR calling bot.recipesFor:`, err.message);
+                        log.error(`Registry error calling bot.recipesFor:`, err.message);
                     }
 
                     // If no recipes found and crafting table exists, try with crafting table
                     if ((!recipes || recipes.length === 0) && craftingTable) {
                         recipes = bot.recipesFor(item.id, null, 1, craftingTable);
-                        console.log(`[Registry] bot.recipesFor(with table) returned:`, recipes ? `${recipes.length} recipes` : 'null');
+                        log.debug(`Registry recipesFor (with table):`, recipes ? `${recipes.length} recipes` : "null");
                     }
 
                     if (recipes && recipes.length > 0) {
-                        console.log(`[Registry] First recipe:`, JSON.stringify(recipes[0], null, 2));
+                        log.debug(`Registry first recipe:`, JSON.stringify(recipes[0]));
                     }
                     // Enhance recipes with ingredient names
                     if (recipes && recipes.length > 0) {
@@ -546,5 +561,5 @@ app.post("/registry", (req, res) => {
 const DEFAULT_PORT = 3000;
 const PORT = process.argv[2] || DEFAULT_PORT;
 app.listen(PORT, () => {
-    console.log(`Server started on port ${PORT}`);
+    log.info(`Server started on port ${PORT}`);
 });

@@ -1,7 +1,10 @@
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
+from voyager.utils import get_logger
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+
+logger = get_logger(__name__)
 
 
 class CriticAgent:
@@ -27,7 +30,7 @@ class CriticAgent:
 
     def render_human_message(self, *, events, task, context, chest_observation):
         if not events or len(events) == 0:
-            print(f"\033[31mCritic Agent: No events to evaluate\033[0m")
+            logger.error("No events to evaluate")
             return None
         assert events[-1][0] == "observe", "Last event must be observe"
         biome = events[-1][1]["status"]["biome"]
@@ -42,13 +45,11 @@ class CriticAgent:
 
         for i, (event_type, event) in enumerate(events):
             if event_type == "onError":
-                print(f"\033[31mCritic Agent: Error occurs {event['onError']}\033[0m")
+                logger.error(f"Execution error in events: {event['onError']}")
                 return None
 
         observation = ""
-
         observation += f"Biome: {biome}\n\n"
-
         observation += f"Time: {time_of_day}\n\n"
 
         if voxels:
@@ -58,9 +59,7 @@ class CriticAgent:
 
         observation += f"Health: {health:.1f}/20\n\n"
         observation += f"Hunger: {hunger:.1f}/20\n\n"
-
         observation += f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n"
-
         observation += f"Equipment: {equipment}\n\n"
 
         if inventory:
@@ -69,7 +68,6 @@ class CriticAgent:
             observation += f"Inventory ({inventory_used}/36): Empty\n\n"
 
         observation += chest_observation
-
         observation += f"Task: {task}\n\n"
 
         if context:
@@ -77,7 +75,7 @@ class CriticAgent:
         else:
             observation += f"Context: None\n\n"
 
-        print(f"\033[31m****Critic Agent human message****\n{observation}\033[0m")
+        logger.debug("Critic human message:\n%s", observation, extra={"llm": True})
         return HumanMessage(content=observation)
 
     def human_check_task_success(self):
@@ -94,16 +92,14 @@ class CriticAgent:
 
     def ai_check_task_success(self, messages, max_retries=5):
         if max_retries == 0:
-            print(
-                "\033[31mFailed to parse Critic Agent response. Consider updating your prompt.\033[0m"
-            )
+            logger.error("Failed to parse Critic Agent response after all retries")
             return False, ""
 
         if messages[1] is None:
             return False, ""
 
         critic = self.llm.invoke(messages).content
-        print(f"\033[31m****Critic Agent ai message****\n{critic}\033[0m")
+        logger.debug("Critic LLM response:\n%s", critic, extra={"llm": True})
         try:
             response = fix_and_parse_json(critic)
             assert response["success"] in [True, False]
@@ -111,7 +107,7 @@ class CriticAgent:
                 response["critique"] = ""
             return response["success"], response["critique"]
         except Exception as e:
-            print(f"\033[31mError parsing critic response: {e} Trying again!\033[0m")
+            logger.warning(f"Error parsing critic response: {e} — retrying")
             return self.ai_check_task_success(
                 messages=messages,
                 max_retries=max_retries - 1,
@@ -127,7 +123,6 @@ class CriticAgent:
             chest_observation=chest_observation,
         )
 
-        # If no events to evaluate, task failed
         if human_message is None:
             return False, "No events to evaluate - execution may have failed"
 

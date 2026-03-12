@@ -7,12 +7,15 @@ import requests
 import json
 
 import gymnasium as gym
-from gymnasium.core import ObsType 
+from gymnasium.core import ObsType
 
 import voyager.utils as U
 
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
+from voyager.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class VoyagerEnv(gym.Env):
@@ -66,7 +69,7 @@ class VoyagerEnv(gym.Env):
         )
 
     def get_mc_instance(self):
-        print("Creating Minecraft server")
+        logger.info("Creating Minecraft server")
         U.f_mkdir(self.log_path, "minecraft")
         return MinecraftInstance(
             **self.azure_login,
@@ -76,24 +79,21 @@ class VoyagerEnv(gym.Env):
 
     def check_process(self):
         if self.mc_instance and not self.mc_instance.is_running:
-            # if self.mc_instance:
-            #     self.mc_instance.check_process()
-            #     if not self.mc_instance.is_running:
-            print("Starting Minecraft server")
+            logger.info("Starting Minecraft server")
             self.mc_instance.run()
             self.mc_port = self.mc_instance.port
             self.reset_options["port"] = self.mc_instance.port
-            print(f"Server started on port {self.reset_options['port']}")
+            logger.info(f"Minecraft server started on port {self.reset_options['port']}")
         retry = 0
         while not self.mineflayer.is_running:
-            print("Mineflayer process has exited, restarting")
+            logger.warning("Mineflayer process has exited, restarting")
             self.mineflayer.run()
             if not self.mineflayer.is_running:
                 if retry > 3:
                     raise RuntimeError("Mineflayer process failed to start")
                 else:
                     continue
-            print(self.mineflayer.ready_line)
+            logger.info(f"Mineflayer ready: {self.mineflayer.ready_line.strip()}")
 
             # Give the server a moment to fully initialize after printing ready message
             time.sleep(1)
@@ -112,14 +112,18 @@ class VoyagerEnv(gym.Env):
                         raise RuntimeError(
                             f"Minecraft server reply with code {res.status_code}"
                         )
-                    return res.json()
+                    data = res.json()
+                    return json.loads(data) if isinstance(data, str) else data
                 except (requests.exceptions.ConnectionError, ConnectionResetError):
                     if attempt < max_retries - 1:
-                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5, 1, 2, 4 seconds
-                        print(f"Connection failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                        wait_time = 0.5 * (2 ** attempt)
+                        logger.warning(
+                            f"Connection to mineflayer failed (attempt {attempt + 1}/{max_retries}), "
+                            f"retrying in {wait_time}s..."
+                        )
                         time.sleep(wait_time)
                     else:
-                        print(f"Failed to connect to mineflayer server after {max_retries} attempts")
+                        logger.error(f"Failed to connect to mineflayer after {max_retries} attempts")
                         raise
 
     def step(
@@ -142,7 +146,7 @@ class VoyagerEnv(gym.Env):
             raise RuntimeError("Failed to step Minecraft server")
         returned_data = res.json()
         self.pause()
-        return json.loads(returned_data)
+        return json.loads(returned_data) if isinstance(returned_data, str) else returned_data
 
     def render(self):
         raise NotImplementedError("render is not implemented")
@@ -180,7 +184,7 @@ class VoyagerEnv(gym.Env):
         # All the reset in step will be soft
         self.reset_options["reset"] = "soft"
         self.pause()
-        return json.loads(returned_data)
+        return json.loads(returned_data) if isinstance(returned_data, str) else returned_data
 
     def close(self):
         self.unpause()
@@ -206,7 +210,7 @@ class VoyagerEnv(gym.Env):
             if res.status_code == 200:
                 self.server_paused = False
             else:
-                print(res.json())
+                logger.warning(f"Unpause failed: {res.json()}")
         return self.server_paused
 
     def get_registry(self, registry_type="items", name=None, timeout=10):
@@ -222,7 +226,7 @@ class VoyagerEnv(gym.Env):
             dict, list, or None: Registry data or None if request fails
         """
         if not self.connected:
-            print("\033[33m[VoyagerEnv] Cannot get registry - bot not connected\033[0m")
+            logger.warning("Cannot get registry - bot not connected")
             return None
 
         try:
@@ -240,9 +244,9 @@ class VoyagerEnv(gym.Env):
                 return res.json()
             else:
                 error_msg = res.json().get("error", "Unknown error")
-                print(f"\033[31m[VoyagerEnv] Registry request failed: {error_msg}\033[0m")
+                logger.error(f"Registry request failed: {error_msg}")
                 return None
 
         except Exception as e:
-            print(f"\033[31m[VoyagerEnv] Error fetching registry: {e}\033[0m")
+            logger.error(f"Error fetching registry: {e}", exc_info=True)
             return None

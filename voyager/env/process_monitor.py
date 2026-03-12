@@ -9,6 +9,7 @@ import logging
 import threading
 
 import voyager.utils as U
+from voyager.utils import get_logger
 
 
 class SubprocessMonitor:
@@ -26,14 +27,20 @@ class SubprocessMonitor:
         self.commands = commands
         start_time = time.strftime("%Y%m%d_%H%M%S")
         self.name = name
+
+        # File logger — writes subprocess stdout to its own timestamped log file
         self.logger = logging.getLogger(name)
-        handler = logging.FileHandler(U.f_join(log_path, f"{start_time}.log"))
+        handler = logging.FileHandler(U.f_join(log_path, f"{start_time}.log"), encoding="utf-8")
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.setLevel(logging.INFO)
+
+        # Voyager hierarchy logger — propagates to run.log / console
+        self._vlogger = get_logger(f"voyager.env.subprocess.{name}")
+
         self.process = None
         self.ready_match = ready_match
         self.ready_event = None
@@ -58,18 +65,20 @@ class SubprocessMonitor:
             errors='replace',  # Replace invalid characters instead of crashing
             cwd=self.cwd,
         )
-        print(f"Subprocess {self.name} started with PID {self.process.pid}.")
+        self._vlogger.info(f"Subprocess '{self.name}' started with PID {self.process.pid}")
         for line in iter(self.process.stdout.readline, ""):
             self.logger.info(line.strip())
             if re.search(self.ready_match, line):
                 self.ready_line = line
                 self.logger.info("Subprocess is ready.")
+                self._vlogger.info(f"Subprocess '{self.name}' is ready")
                 self.ready_event.set()
             if re.search(self.callback_match, line):
                 self.callback()
         if not self.ready_event.is_set():
             self.ready_event.set()
             warnings.warn(f"Subprocess {self.name} failed to start.")
+            self._vlogger.warning(f"Subprocess '{self.name}' exited before becoming ready")
         if self.finished_callback:
             self.finished_callback()
 
@@ -85,10 +94,6 @@ class SubprocessMonitor:
         if self.process and self.process.is_running():
             self.process.terminate()
             self.process.wait()
-
-    # def __del__(self):
-    #     if self.process.is_running():
-    #         self.stop()
 
     @property
     def is_running(self):

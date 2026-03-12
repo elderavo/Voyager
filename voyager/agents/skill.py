@@ -4,12 +4,15 @@ import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import voyager.utils as U
+from voyager.utils import get_logger
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import Chroma
 
 from voyager.prompts import load_prompt
 from voyager.control_primitives import load_control_primitives
+
+logger = get_logger(__name__)
 
 
 class SkillManager:
@@ -31,10 +34,9 @@ class SkillManager:
         U.f_mkdir(f"{ckpt_dir}/skill/code")
         U.f_mkdir(f"{ckpt_dir}/skill/description")
         U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
-        # programs for env execution
         self.control_primitives = load_control_primitives()
         if resume:
-            print(f"\033[33mLoading Skill Manager from {ckpt_dir}/skill\033[0m")
+            logger.info(f"Loading Skill Manager from {ckpt_dir}/skill")
             self.skills = U.load_json(f"{ckpt_dir}/skill/skills.json")
         else:
             self.skills = {}
@@ -63,30 +65,27 @@ class SkillManager:
 
     def add_new_skill(self, info):
         if info["task"].startswith("Deposit useless items into the chest at"):
-            # No need to reuse the deposit skill
             return
         program_name = info["program_name"]
         program_code = info["program_code"]
         skill_description = self.generate_skill_description(program_name, program_code)
-        print(
-            f"\033[33mSkill Manager generated description for {program_name}:\n{skill_description}\033[0m"
-        )
+        logger.info(f"Generated description for '{program_name}':\n{skill_description}")
 
-        # Get primitive decomposition from HTN orchestrator if available
         primitives = info.get("primitives", [])
         if primitives:
-            print(f"\033[33mSkill Manager storing {len(primitives)} primitives for {program_name}\033[0m")
+            logger.info(f"Storing {len(primitives)} primitives for '{program_name}'")
 
-        # Get recipe metadata from LLM response
         recipe = info.get("recipe", None)
         if recipe:
-            print(f"\033[33mSkill Manager storing recipe for {program_name}:\033[0m")
-            print(f"\033[33m  Output: {recipe.get('output', 'unknown')}\033[0m")
-            print(f"\033[33m  Inputs: {recipe.get('inputs', [])}\033[0m")
-            print(f"\033[33m  CraftIn: {recipe.get('craftIn', 'unknown')}\033[0m")
+            logger.info(
+                f"Storing recipe for '{program_name}': "
+                f"output={recipe.get('output', '?')} "
+                f"inputs={recipe.get('inputs', [])} "
+                f"craftIn={recipe.get('craftIn', '?')}"
+            )
 
         if program_name in self.skills:
-            print(f"\033[33mSkill {program_name} already exists. Rewriting!\033[0m")
+            logger.warning(f"Skill '{program_name}' already exists — rewriting")
             self.vectordb._collection.delete(ids=[program_name])
             i = 2
             while f"{program_name}V{i}.js" in os.listdir(f"{self.ckpt_dir}/skill/code"):
@@ -102,8 +101,8 @@ class SkillManager:
         self.skills[program_name] = {
             "code": program_code,
             "description": skill_description,
-            "primitives": primitives,  # Store primitive decomposition
-            "recipe": recipe,  # Store recipe metadata (inputs, output, craftIn)
+            "primitives": primitives,
+            "recipe": recipe,
         }
         assert self.vectordb._collection.count() == len(
             self.skills
@@ -127,19 +126,20 @@ class SkillManager:
                 + f"The main function is `{program_name}`."
             ),
         ]
-        skill_description = f"    // { self.llm.invoke(messages).content}"
+        logger.debug("LLM request [skill-description] for %s", program_name, extra={"llm": True})
+        content = self.llm.invoke(messages).content
+        logger.debug("LLM response [skill-description]:\n%s", content, extra={"llm": True})
+        skill_description = f"    // {content}"
         return f"async function {program_name}(bot) {{\n{skill_description}\n}}"
 
     def retrieve_skills(self, query):
         k = min(self.vectordb._collection.count(), self.retrieval_top_k)
         if k == 0:
             return []
-        print(f"\033[33mSkill Manager retrieving for {k} skills\033[0m")
+        logger.debug(f"Retrieving top {k} skills for query")
         docs_and_scores = self.vectordb.similarity_search_with_score(query, k=k)
-        print(
-            f"\033[33mSkill Manager retrieved skills: "
-            f"{', '.join([doc.metadata['name'] for doc, _ in docs_and_scores])}\033[0m"
-        )
+        names = [doc.metadata['name'] for doc, _ in docs_and_scores]
+        logger.info(f"Retrieved skills: {', '.join(names)}")
         skills = []
         for doc, _ in docs_and_scores:
             skills.append(self.skills[doc.metadata["name"]]["code"])

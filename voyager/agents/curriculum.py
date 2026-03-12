@@ -11,10 +11,13 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import voyager.utils as U
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
+from voyager.utils import get_logger
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import Chroma
 from voyager.agents.task_queue import TaskQueue, Task
+
+logger = get_logger(__name__)
 
 
 class CurriculumAgent:
@@ -51,11 +54,10 @@ class CurriculumAgent:
         self.ckpt_dir = ckpt_dir
         self._qa_cache_vectordb_dir = f"{ckpt_dir}/curriculum/vectordb"
         if not resume and os.path.exists(self._qa_cache_vectordb_dir):
-            # Ensure fresh QA cache state when not resuming from checkpoints
             shutil.rmtree(self._qa_cache_vectordb_dir)
         U.f_mkdir(self._qa_cache_vectordb_dir)
         if resume:
-            print(f"\033[35mLoading Curriculum Agent from {ckpt_dir}/curriculum\033[0m")
+            logger.info(f"Loading Curriculum Agent from {ckpt_dir}/curriculum")
             self.completed_tasks = U.load_json(
                 f"{ckpt_dir}/curriculum/completed_tasks.json"
             )
@@ -65,7 +67,6 @@ class CurriculumAgent:
             self.completed_tasks = []
             self.failed_tasks = []
             self.qa_cache = {}
-        # vectordb for qa cache
         self.qa_cache_questions_vectordb = Chroma(
             collection_name="qa_cache_questions_vectordb",
             embedding_function=OpenAIEmbeddings(),
@@ -80,7 +81,6 @@ class CurriculumAgent:
             f"Did you set resume=False when initializing the agent?\n"
             f"You may need to manually delete the qa cache question vectordb directory for running from scratch.\n"
         )
-        # if warm up not defined, initialize it as a dict, else, initialize all the missing value as a default value
         if not warm_up:
             warm_up = self.default_warmup
         self.warm_up = {}
@@ -99,9 +99,8 @@ class CurriculumAgent:
         self.warm_up["completed_tasks"] = 0
         self.warm_up["failed_tasks"] = 0
 
-        # Initialize task queue for HTN decomposition
         self.task_queue = TaskQueue()
-        print(f"\033[35mInitialized TaskQueue in CurriculumAgent\033[0m")
+        logger.info("Initialized TaskQueue in CurriculumAgent")
 
     @property
     def default_warmup(self):
@@ -116,7 +115,6 @@ class CurriculumAgent:
             "hunger": 15,
             "position": 0,
             "equipment": 0,
-            #"inventory": 0,
             "optional_inventory_items": 7,
             "chests": 0,
             "completed_tasks": 0,
@@ -136,7 +134,6 @@ class CurriculumAgent:
             "hunger",
             "position",
             "equipment",
-            #"inventory",
             "chests",
             "completed_tasks",
             "failed_tasks",
@@ -181,7 +178,6 @@ class CurriculumAgent:
                 set(block_records).difference(set(voxels).union(set(inventory.keys())))
             )
         )
-
         other_blocks = other_blocks if other_blocks else "None"
 
         nearby_entities = (
@@ -195,7 +191,6 @@ class CurriculumAgent:
         )
         failed_tasks = ", ".join(self.failed_tasks) if self.failed_tasks else "None"
 
-        # filter out optional inventory items if required
         if self.progress < self.warm_up["optional_inventory_items"]:
             inventory = {
                 k: v
@@ -214,7 +209,6 @@ class CurriculumAgent:
             "hunger": f"Hunger: {hunger:.1f}/20\n\n",
             "position": f"Position: x={position['x']:.1f}, y={position['y']:.1f}, z={position['z']:.1f}\n\n",
             "equipment": f"Equipment: {equipment}\n\n",
-            #"inventory": f"Inventory ({inventory_used}/36): {inventory if inventory else 'Empty'}\n\n",
             "chests": chest_observation,
             "completed_tasks": f"Completed tasks so far: {completed_tasks}\n\n",
             "failed_tasks": f"Failed tasks that are too hard: {failed_tasks}\n\n",
@@ -249,16 +243,10 @@ class CurriculumAgent:
                 if should_include:
                     content += observation[key]
 
-        print(f"\033[35m****Curriculum Agent human message****\n{content}\033[0m")
+        logger.debug("Curriculum human message:\n%s", content, extra={"llm": True})
         return HumanMessage(content=content)
 
     def propose_next_task(self, *, events, chest_observation, max_retries=5):
-        #if self.progress == 0 and self.mode == "auto":
-        #    task = "Mine 1 wood log"
-        #    context = "You can mine one of oak, birch, spruce, jungle, acacia, dark oak, or mangrove logs."
-        #    return task, context
-
-        # hard code task when inventory is almost full
         if events:
             inventoryUsed = events[-1][1]["status"].get("inventoryUsed", 0)
         else:
@@ -313,16 +301,14 @@ class CurriculumAgent:
         if max_retries == 0:
             raise RuntimeError("Max retries reached, failed to propose ai task.")
         curriculum = self.llm.invoke(messages).content
-        print(f"\033[31m****Curriculum Agent ai message****\n{curriculum}\033[0m")
+        logger.debug("Curriculum LLM response:\n%s", curriculum, extra={"llm": True})
         try:
             response = self.parse_ai_message(curriculum)
             assert "next_task" in response
             context = self.get_task_context(response["next_task"])
             return response["next_task"], context
         except Exception as e:
-            print(
-                f"\033[35mError parsing curriculum response: {e}. Trying again!\033[0m"
-            )
+            logger.warning(f"Error parsing curriculum response: {e} — retrying")
             return self.propose_next_ai_task(
                 messages=messages,
                 max_retries=max_retries - 1,
@@ -349,38 +335,26 @@ class CurriculumAgent:
     def update_exploration_progress(self, info):
         task = info["task"]
         if task.startswith("Deposit useless items into the chest at"):
-            # No need to record the deposit task
             return
         if info["success"]:
-            print(f"\033[35mCompleted task {task}.\033[0m")
+            logger.info(f"Completed task: {task}")
             self.completed_tasks.append(task)
         else:
-            print(
-                f"\033[35mFailed to complete task {task}. Skipping to next task.\033[0m"
-            )
+            logger.info(f"Failed task: {task} — skipping to next")
             self.failed_tasks.append(task)
-
-        # clean up tasks and dump to disk
         self.clean_up_tasks()
 
     def clean_up_tasks(self):
         updated_completed_tasks = []
-        # record repeated failed tasks
         updated_failed_tasks = self.failed_tasks
-        # dedup but keep order
         for task in self.completed_tasks:
             if task not in updated_completed_tasks:
                 updated_completed_tasks.append(task)
-
-        # remove completed tasks from failed tasks
         for task in updated_completed_tasks:
             while task in updated_failed_tasks:
                 updated_failed_tasks.remove(task)
-
         self.completed_tasks = updated_completed_tasks
         self.failed_tasks = updated_failed_tasks
-
-        # dump to json
         U.dump_json(
             self.completed_tasks, f"{self.ckpt_dir}/curriculum/completed_tasks.json"
         )
@@ -388,17 +362,13 @@ class CurriculumAgent:
 
     def decompose_task(self, task, events):
         messages = [
-            SystemMessage(
-                content=load_prompt("curriculum_task_decomposition"),
-            ),
+            SystemMessage(content=load_prompt("curriculum_task_decomposition")),
             self.render_human_message(events=events, chest_observation=""),
             HumanMessage(content=f"Final task: {task}"),
         ]
-        print(
-            f"\033[31m****Curriculum Agent task decomposition****\nFinal task: {task}\033[0m"
-        )
+        logger.debug("Curriculum task decomposition for: %s", task, extra={"llm": True})
         response = self.llm.invoke(messages).content
-        print(f"\033[31m****Curriculum Agent task decomposition****\n{response}\033[0m")
+        logger.debug("Curriculum decomposition response:\n%s", response, extra={"llm": True})
         return fix_and_parse_json(response)
 
     def run_qa(self, *, events, chest_observation):
@@ -424,9 +394,7 @@ class CurriculumAgent:
             answer = self.run_qa_step2_answer_questions(question=question)
             assert question not in self.qa_cache
             self.qa_cache[question] = answer
-            self.qa_cache_questions_vectordb.add_texts(
-                texts=[question],
-            )
+            self.qa_cache_questions_vectordb.add_texts(texts=[question])
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
             self.qa_cache_questions_vectordb.persist()
             questions.append(question)
@@ -435,7 +403,6 @@ class CurriculumAgent:
         return questions, answers
 
     def get_task_context(self, task):
-        # if include ore in question, gpt will try to use tool with skill touch enhancement to mine
         question = (
             f"How to {task.replace('_', ' ').replace(' ore', '').replace(' ores', '').replace('.', '').strip().lower()}"
             f" in Minecraft?"
@@ -445,9 +412,7 @@ class CurriculumAgent:
         else:
             answer = self.run_qa_step2_answer_questions(question=question)
             self.qa_cache[question] = answer
-            self.qa_cache_questions_vectordb.add_texts(
-                texts=[question],
-            )
+            self.qa_cache_questions_vectordb.add_texts(texts=[question])
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
             self.qa_cache_questions_vectordb.persist()
         context = f"Question: {question}\n{answer}"
@@ -481,21 +446,15 @@ class CurriculumAgent:
         ]
         qa_response = self.qa_llm.invoke(messages).content
         try:
-            # Regex pattern to extract question and concept pairs
             pattern = r"Question \d+: (.+)\nConcept \d+: (.+)"
-            # Extracting all question and concept pairs from the text
             pairs = re.findall(pattern, qa_response)
-            # Storing each question and concept in separate lists
             questions_new = [pair[0] for pair in pairs]
             concepts_new = [pair[1] for pair in pairs]
             assert len(questions_new) == len(concepts_new)
             questions.extend(questions_new)
             concepts.extend(concepts_new)
         except Exception as e:
-            print(
-                f"\033[35mError parsing curriculum response for "
-                f"QA step 1 ask questions: {e}.\033[0m"
-            )
+            logger.warning(f"Error parsing QA step 1 response: {e}")
         return questions, concepts
 
     def render_system_message_qa_step2_answer_questions(self):
@@ -512,61 +471,33 @@ class CurriculumAgent:
             self.render_system_message_qa_step2_answer_questions(),
             self.render_human_message_qa_step2_answer_questions(question=question),
         ]
-        print(f"\033[35mCurriculum Agent Question: {question}\033[0m")
+        logger.debug("QA question: %s", question, extra={"llm": True})
         qa_answer = self.qa_llm.invoke(messages).content
-        print(f"\033[31mCurriculum Agent {qa_answer}\033[0m")
+        logger.debug("QA answer:\n%s", qa_answer, extra={"llm": True})
         return qa_answer
 
     def get_next_task_from_queue(self):
-        """
-        Get the next task from the HTN task queue.
-
-        This method integrates with the new task queue system, allowing
-        the curriculum agent to work through decomposed task dependencies.
-
-        Returns:
-            Task or None: Next task from queue, or None if queue is empty
-        """
         if not self.task_queue.empty():
             next_task = self.task_queue.pop()
-            print(f"\033[35m[CurriculumAgent] Popped task from queue: {next_task}\033[0m")
-            print(f"\033[35m[CurriculumAgent] Remaining queue size: {self.task_queue.size()}\033[0m")
+            logger.debug(f"Popped task from queue: {next_task} (remaining: {self.task_queue.size()})")
             return next_task
         return None
 
     def process_action_response(self, intention, primitive_actions, missing_dependencies):
-        """
-        Process the JSON response from ActionAgent and populate the task queue.
+        logger.info(
+            f"Processing action response — intention: {intention} | "
+            f"primitives: {primitive_actions} | missing: {missing_dependencies}"
+        )
 
-        This replaces the old code-generation workflow with structured task decomposition.
-
-        Args:
-            intention (str): High-level goal from the action agent
-            primitive_actions (list): Actions that can be executed immediately
-            missing_dependencies (list): Dependencies that must be resolved first
-
-        Returns:
-            Task or None: The next task to execute, or None if nothing to do
-        """
-        print(f"\033[35m[CurriculumAgent] Processing action response:\033[0m")
-        print(f"\033[35m  Intention: {intention}\033[0m")
-        print(f"\033[35m  Primitive actions: {primitive_actions}\033[0m")
-        print(f"\033[35m  Missing dependencies: {missing_dependencies}\033[0m")
-
-        # First, queue up all missing dependencies (these must be resolved first)
         for dep in missing_dependencies:
             self.task_queue.push(Task("dependency", dep, parent=intention))
 
-        # Then queue primitive actions
         for pa in primitive_actions:
-            # Primitive actions might be dicts with type and payload
             if isinstance(pa, dict):
                 action_type = pa.get("type", "unknown")
                 payload = pa.get("payload", None)
                 self.task_queue.push(Task(action_type, payload, parent=intention))
             else:
-                # Or simple string actions
                 self.task_queue.push(Task(pa, None, parent=intention))
 
-        # Return the next task to execute
         return self.task_queue.pop()

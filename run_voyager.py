@@ -1,5 +1,7 @@
+import logging
 import os
 from voyager import Voyager
+from voyager.utils.logger import setup_logging
 
 # Disable ChromaDB telemetry to avoid errors
 #os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -7,6 +9,10 @@ from voyager import Voyager
 # Configuration for your LAN homelab server
 HOMELAB_IP = "10.0.132.101"  # Your homelab Minecraft server IP
 MC_PORT = 25565              # Your Minecraft server port (default: 25565)
+
+# Configure logging for this session
+session_id = setup_logging(log_path="./logs", console_level=logging.INFO)
+print(f"Session logs → ./logs/{session_id}/  (run.log | errors.log | llm.log)")
 
 # Read your OpenAI API key
 with open(r"C:\Users\Alex\OneDrive - Naval Postgraduate School\Desktop\openAIKey.txt", "r") as f:
