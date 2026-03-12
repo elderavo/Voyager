@@ -36,6 +36,14 @@ const { plugin: tool } = require("mineflayer-tool");
 
 let bot = null;
 
+// Prevent viewer/plugin errors from crashing the process between requests
+process.on("uncaughtException", (err) => {
+    log.error("Uncaught exception (non-fatal):", err.message || String(err));
+});
+process.on("unhandledRejection", (reason) => {
+    log.error("Unhandled promise rejection (non-fatal):", reason instanceof Error ? reason.message : String(reason));
+});
+
 const app = express();
 
 app.use(bodyParser.json({ limit: "50mb" }));
@@ -73,8 +81,14 @@ app.post("/start", (req, res) => {
         bot.removeListener("error", onConnectionFailed);
         let itemTicks = 1;
         if (req.body.reset === "hard") {
+            // Set keepInventory first so the kill doesn't drop items
+            bot.chat("/gamerule keepInventory true");
             bot.chat("/clear @s");
             bot.chat("/kill @s");
+            // Wait for the bot to respawn after /kill before continuing setup
+            await new Promise((resolve) => bot.once("respawn", resolve));
+            log.debug("Bot respawned after hard reset kill");
+
             const inventory = req.body.inventory ? req.body.inventory : {};
             const equipment = req.body.equipment
                 ? req.body.equipment
@@ -161,8 +175,12 @@ app.post("/start", (req, res) => {
 
         // Initialize prismarine-viewer so you can watch the bot in a browser
         // Access at http://localhost:3007 in your web browser
-        bot.viewer = mineflayerViewer(bot, { port: 3007, firstPerson: true });
-        log.info("Prismarine viewer started on http://localhost:3007");
+        try {
+            bot.viewer = mineflayerViewer(bot, { port: 3007, firstPerson: true });
+            log.info("Prismarine viewer started on http://localhost:3007");
+        } catch (viewerErr) {
+            log.warn("Prismarine viewer failed to start (port 3007 may still be in use):", viewerErr.message);
+        }
     });
 
     function onConnectionFailed(e) {

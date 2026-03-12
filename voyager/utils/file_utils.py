@@ -535,7 +535,7 @@ def dump_pickle(data, *fpaths):
 
 
 def load_text(*fpaths, by_lines=False):
-    with open(f_join(*fpaths), "r") as fp:
+    with open(f_join(*fpaths), "r", encoding="utf-8") as fp:
         if by_lines:
             return fp.readlines()
         else:
@@ -547,12 +547,12 @@ def load_text_lines(*fpaths):
 
 
 def dump_text(s, *fpaths):
-    with open(f_join(*fpaths), "w") as fp:
+    with open(f_join(*fpaths), "w", encoding="utf-8") as fp:
         fp.write(s)
 
 
 def dump_text_lines(lines: list[str], *fpaths, add_newline=True):
-    with open(f_join(*fpaths), "w") as fp:
+    with open(f_join(*fpaths), "w", encoding="utf-8") as fp:
         for line in lines:
             print(line, file=fp, end="\n" if add_newline else "")
 
