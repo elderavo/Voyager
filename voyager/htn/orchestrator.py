@@ -110,7 +110,7 @@ class HTNOrchestrator:
                     return skill_name, skill_data
         return None, None
 
-    def decompose_skill_to_primitives(self, skill_code, skill_name, known_skills=None):
+    def decompose_skill_to_primitives(self, skill_code, skill_name, known_skills=None, _stack=None):
         """
         Recursively decompose skill into primitive operations WITH arguments.
 
@@ -119,9 +119,28 @@ class HTNOrchestrator:
         - For craftItem calls: push the craft FIRST, then decompose prerequisites
         - Prerequisites execute first (on top of stack)
         - Craft executes last (at bottom of stack) when ingredients are ready
+
+        _stack is a frozenset of skill names currently being decomposed.
+        Any skill already in _stack is a cycle and is treated as a primitive leaf
+        rather than decomposed further, preventing infinite recursion.
         """
         if known_skills is None:
             known_skills = self.skill_manager.skills
+
+        if _stack is None:
+            _stack = frozenset()
+
+        # Cycle guard: if this skill is already being decomposed higher up the
+        # call chain, stop here and let the primitive executor handle it directly.
+        if skill_name in _stack:
+            logger.warning(
+                f"Cycle detected: '{skill_name}' is already in the decomposition "
+                f"stack {set(_stack)} — treating as a primitive leaf to break recursion"
+            )
+            return []
+
+        # Add this skill to the immutable stack copy so recursive calls see it.
+        _stack = _stack | {skill_name}
 
         logger.debug(f"Decomposing skill: {skill_name}")
 
@@ -156,13 +175,16 @@ class HTNOrchestrator:
 
                 producing_skill_name, producing_skill_data = self.find_skill_for_output(item_name, known_skills)
 
-                if producing_skill_name:
+                if producing_skill_name and producing_skill_name not in _stack:
                     logger.debug(f"  Decomposing prerequisite skill '{producing_skill_name}' (produces {item_name})")
-                    sub_skill_code = producing_skill_data['code']
                     sub_tasks = self.decompose_skill_to_primitives(
-                        sub_skill_code, producing_skill_name, known_skills
+                        producing_skill_data['code'], producing_skill_name, known_skills, _stack
                     )
                     execution_stack.extend(sub_tasks)
+                elif producing_skill_name and producing_skill_name in _stack:
+                    logger.debug(
+                        f"  Skipping prerequisite '{producing_skill_name}' — already in decomposition stack (cycle)"
+                    )
                 else:
                     logger.debug(f"  No stored skill for '{item_name}'; executing craftItem directly via Mineflayer")
 
@@ -180,12 +202,16 @@ class HTNOrchestrator:
                 logger.debug(f"  Primitive: {func_name}({', '.join(func_args)})")
 
             elif func_name in known_skills:
-                logger.debug(f"  Decomposing sub-skill: {func_name}")
-                sub_skill_code = known_skills[func_name]['code']
-                sub_tasks = self.decompose_skill_to_primitives(
-                    sub_skill_code, func_name, known_skills
-                )
-                execution_stack.extend(sub_tasks)
+                if func_name not in _stack:
+                    logger.debug(f"  Decomposing sub-skill: {func_name}")
+                    sub_tasks = self.decompose_skill_to_primitives(
+                        known_skills[func_name]['code'], func_name, known_skills, _stack
+                    )
+                    execution_stack.extend(sub_tasks)
+                else:
+                    logger.debug(
+                        f"  Skipping sub-skill '{func_name}' — already in decomposition stack (cycle)"
+                    )
 
             else:
                 logger.warning(f"  Unknown function '{func_name}' in skill '{skill_name}' — skipping")
@@ -217,22 +243,35 @@ class HTNOrchestrator:
         return True, None
 
     def _parse_missing_items(self, error_msg):
-        """Extract missing item names from Mineflayer error messages."""
-        # Pattern: "I cannot make X because I need: item1, item2, item3"
-        pattern1 = r"I cannot make .+ because I need: (.+)"
-        match = re.search(pattern1, error_msg)
+        """
+        Extract (item_name, quantity) pairs from Mineflayer error messages.
+
+        Returns list of (item_name: str, quantity: int) tuples.
+        """
+        # Pattern: "I cannot make X because I need: 2 more oak_planks, 1 more stick"
+        pattern = r"I cannot make .+ because I need: (.+)"
+        match = re.search(pattern, error_msg)
         if match:
-            items = [item.strip() for item in match.group(1).split(',')]
-            logger.debug(f"Parsed missing items from error: {items}")
-            return items
+            raw_parts = [p.strip().rstrip(',') for p in match.group(1).split(',')]
+            result = []
+            for part in raw_parts:
+                if not part:
+                    continue
+                qty_match = re.match(r'(\d+)\s+more\s+(\w+)', part)
+                if qty_match:
+                    result.append((qty_match.group(2), int(qty_match.group(1))))
+                else:
+                    result.append((part, 1))
+            logger.debug(f"Parsed missing items: {result}")
+            return result
 
         # Pattern: "NoItem: item_name" or "MissingIngredient: item_name"
         pattern2 = r"(?:NoItem|MissingIngredient):\s*(\w+)"
         match = re.search(pattern2, error_msg)
         if match:
             item = match.group(1)
-            logger.debug(f"Parsed missing item from error: {item}")
-            return [item]
+            logger.debug(f"Parsed missing item: {item}")
+            return [(item, 1)]
 
         return []
 
@@ -323,35 +362,56 @@ class HTNOrchestrator:
 
     def schedule_missing_prereqs(self, missing_items):
         """
-        Schedule skills that produce missing prerequisite items.
+        Schedule tasks that satisfy missing prerequisite items.
 
-        Returns:
-            list: Unresolved items (items with no known producing skill)
+        For each missing item:
+          - If a stored skill produces it, decompose and queue that skill.
+          - Otherwise, inject a direct craftItem primitive.  craftItem itself
+            handles 2x2/3x3 resolution, table placement, and error reporting,
+            so this short-circuits the ActionAgent LLM loop for simple crafted
+            intermediates (planks, sticks, etc.).
+
+        Returns list of truly unresolved items — those where even the craftItem
+        fallback could not be queued (currently always empty; craftItem failure
+        surfaces as an execution error on the next step rather than here).
         """
-        logger.info(f"Scheduling prerequisites for missing items: {missing_items}")
+        logger.info(f"Scheduling prerequisites for: {missing_items}")
 
-        unresolved = []
+        for item_tuple in missing_items:
+            # _parse_missing_items now returns (name, qty) tuples
+            if isinstance(item_tuple, tuple):
+                item_name, qty = item_tuple
+            else:
+                item_name, qty = item_tuple, 1
 
-        for item in missing_items:
-            skill_name, skill_data = self.find_skill_for_output(item, self.skill_manager.skills)
+            skill_name, skill_data = self.find_skill_for_output(item_name, self.skill_manager.skills)
 
             if skill_name and skill_data:
-                logger.info(f"Found skill '{skill_name}' that produces '{item}'")
-                skill_code = skill_data['code']
-                subtasks = self.decompose_skill_to_primitives(skill_code, skill_name)
-                logger.info(f"Queueing {len(subtasks)} primitives for '{skill_name}'")
+                logger.info(f"Found stored skill '{skill_name}' for '{item_name}' — decomposing")
+                subtasks = self.decompose_skill_to_primitives(skill_data['code'], skill_name)
                 for task in reversed(subtasks):
                     self.task_queue.push(task)
             else:
-                logger.warning(f"No known skill produces '{item}' — marking as unresolved")
-                unresolved.append(item)
+                # No stored skill — inject a direct craftItem rather than going
+                # back through the ActionAgent LLM for a trivially craftable item.
+                logger.info(
+                    f"No stored skill for '{item_name}' — injecting craftItem(bot, '{item_name}', {qty}) directly"
+                )
+                self.task_queue.push(Task(
+                    action="primitive",
+                    payload={
+                        "function": "craftItem",
+                        "args": ["bot", f"'{item_name}'", str(qty)],
+                        "skill": f"_auto_{item_name}",
+                        "line": 0,
+                    },
+                    parent="_auto",
+                ))
 
-        if unresolved:
-            logger.warning(f"Unresolved prerequisites: {unresolved}")
-        else:
-            logger.info("All prerequisites resolved with known skills")
-
-        return unresolved
+        # All items were handled (either via skill or craftItem fallback).
+        # Actual un-craftable items will surface as execution errors on the next
+        # step and escalate naturally to the ActionAgent.
+        return []
 
     def get_execution_summary(self):
         return {

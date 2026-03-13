@@ -142,6 +142,9 @@ class Voyager:
         self.top_level_task = None
         self.top_level_skill_name = None
 
+        # Set to True inside _save_skill_tree so learn() knows not to save again
+        self._skill_just_saved = False
+
     def reset(self, task, context="", reset_env=True):
         self.action_agent_rollout_num_iter = 0
         self.task = task
@@ -235,6 +238,9 @@ class Voyager:
 
         self.skill_manager.add_new_skill(info)
         logger.info(f"Skill tree saved with {len(self.execution_chain)} primitives")
+
+        # Signal learn() not to save again for this task
+        self._skill_just_saved = True
 
         self.execution_chain = []
         self.top_level_task = None
@@ -565,7 +571,11 @@ class Voyager:
                 logger.error(f"Rollout terminated due to error: {e}", exc_info=True)
 
             if info["success"]:
-                self.skill_manager.add_new_skill(info)
+                if self._skill_just_saved:
+                    logger.debug("Skill already saved by _save_skill_tree — skipping duplicate add_new_skill")
+                else:
+                    self.skill_manager.add_new_skill(info)
+            self._skill_just_saved = False  # reset for next task
 
             self.curriculum_agent.update_exploration_progress(info)
             logger.info(f"Completed tasks: {', '.join(self.curriculum_agent.completed_tasks) or 'none'}")

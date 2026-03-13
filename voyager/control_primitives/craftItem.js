@@ -20,22 +20,35 @@ function findSafePlacementPos(bot) {
     return base.offset(1, 0, 0); // fallback
 }
 
-// Ensures a crafting table is placed in the world and the bot is standing in
-// front of it.  Returns the crafting-table block on success, null on failure.
+// Scan for a placed crafting table, retrying a few times to allow the
+// server's block-update to propagate back to mineflayer's world state.
+// On a LAN server one round-trip is ~10-50 ms; 2 ticks (100 ms) is not
+// reliably enough, so we poll up to `attempts` times.
+async function findNearbyCraftingTable(bot, maxDistance = 32, attempts = 3, ticksBetween = 3) {
+    const craftingTableId = mcData.blocksByName.crafting_table.id;
+    for (let i = 0; i < attempts; i++) {
+        const table = bot.findBlock({ matching: craftingTableId, maxDistance });
+        if (table) return table;
+        await bot.waitForTicks(ticksBetween);
+    }
+    return null;
+}
+
+// Ensures a crafting table is placed in the world and the bot is adjacent
+// to it.  Returns the crafting-table block on success, null on failure.
 //
 // Resolution order:
-//   1. Already in the world nearby  → navigate to it
-//   2. In inventory                 → place at a safe spot, navigate
+//   1. Already in the world nearby  → navigate close, return it
+//   2. In inventory                 → place, wait, retry-scan, navigate
 //   3. Neither                      → craft one from planks (2x2, no table
 //                                     required), then place and navigate
 async function ensureCraftingTable(bot) {
     // 1. Already placed nearby?
-    let table = bot.findBlock({
-        matching: mcData.blocksByName.crafting_table.id,
-        maxDistance: 32,
-    });
+    let table = await findNearbyCraftingTable(bot, 32, 1, 0);
     if (table) {
-        await bot.pathfinder.goto(new GoalLookAtBlock(table.position, bot.world));
+        await bot.pathfinder.goto(
+            new GoalNear(table.position.x, table.position.y, table.position.z, 1)
+        );
         return table;
     }
 
@@ -76,19 +89,21 @@ async function ensureCraftingTable(bot) {
     // 4. Place it at a safe nearby position
     const pos = findSafePlacementPos(bot);
     await placeItem(bot, "crafting_table", pos);
-    // Wait for the world state to register the new block before scanning
-    await bot.waitForTicks(2);
 
-    table = bot.findBlock({
-        matching: mcData.blocksByName.crafting_table.id,
-        maxDistance: 8,
-    });
+    // Wait longer than the minimum — LAN round-trip means the block update
+    // arrives later than on localhost.  Then retry the scan several times
+    // before giving up, mirroring what the proven action_branch does.
+    await bot.waitForTicks(5);
+    table = await findNearbyCraftingTable(bot, 6, 3, 3);
+
     if (!table) {
-        bot.chat("Failed to place crafting table");
+        bot.chat("Failed to locate crafting table after placement");
         return null;
     }
 
-    await bot.pathfinder.goto(new GoalLookAtBlock(table.position, bot.world));
+    await bot.pathfinder.goto(
+        new GoalNear(table.position.x, table.position.y, table.position.z, 1)
+    );
     return table;
 }
 
