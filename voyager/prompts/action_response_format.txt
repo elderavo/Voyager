@@ -1,15 +1,15 @@
 You MUST output a JSON dictionary with the following structure:
 
-{
+{{
   "program_code": "<async function solving ONLY the top-level task>",
   "program_name": "<functionNameInCamelCase>",
   "reasoning": "<brief explanation>",
-  "recipe": {
+  "recipe": {{
     "inputs": ["<list of items required>"],
     "output": "<item produced by this skill>",
     "craftIn": "<crafting_table | furnace | 2x2_grid | null>"
-  }
-}
+  }}
+}}
 
 ===============================
 CONSTRAINTS FOR program_code
@@ -32,16 +32,16 @@ EXAMPLES (STRICTLY FOLLOW THESE)
 
 Example for crafting with direct primitives:
 
-{
-  "program_code": "async function craftWoodenPickaxe(bot) {\n  bot.chat('Crafting wooden pickaxe');\n  await mineBlock(bot, 'oak_log', 1);\n  await craftItem(bot, 'oak_planks', 4);\n  await craftItem(bot, 'stick', 2);\n  await craftItem(bot, 'wooden_pickaxe', 1);\n  bot.chat('Pickaxe crafted!');\n}",
+{{
+  "program_code": "async function craftWoodenPickaxe(bot) {{\n  bot.chat('Crafting wooden pickaxe');\n  await mineBlock(bot, 'oak_log', 1);\n  await craftItem(bot, 'oak_planks', 4);\n  await craftItem(bot, 'stick', 2);\n  await craftItem(bot, 'wooden_pickaxe', 1);\n  bot.chat('Pickaxe crafted!');\n}}",
   "program_name": "craftWoodenPickaxe",
   "reasoning": "Use primitives directly. No helper skills.",
-  "recipe": {
+  "recipe": {{
     "inputs": ["oak_log", "oak_planks", "stick"],
     "output": "wooden_pickaxe",
     "craftIn": "crafting_table"
-  }
-}
+  }}
+}}
 
 You may return immediate primitive execution using ONLY the field:
 
@@ -54,13 +54,13 @@ In this case:
 
 Example for gathering inside main function (NOT a standalone skill):
 
-{
-  "program_code": "async function gatherStoneForFurnace(bot) {\n  bot.chat('Mining stone');\n  await mineBlock(bot, 'stone', 8);\n  bot.chat('Stone ready');\n}",
+{{
+  "program_code": "async function gatherStoneForFurnace(bot) {{\n  bot.chat('Mining stone');\n  await mineBlock(bot, 'stone', 8);\n  bot.chat('Stone ready');\n}}",
   "program_name": "gatherStoneForFurnace",
   "reasoning": "Direct primitive use.",
-  "recipe": {
+  "recipe": {{
     "inputs": ["stone"],
     "output": "stone",
     "craftIn": null
-  }
-}
+  }}
+}}

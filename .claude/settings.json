@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\Alex\\\\Desktop\\\\Projects\\\\Coding\\\\Minecraft\" show Iter1:voyager/voyager.py)",
+      "Bash(git -C \"c:\\\\Users\\\\Alex\\\\Desktop\\\\Projects\\\\Coding\\\\Minecraft\" branch -a)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\Alex\\Desktop\\Projects\\Coding\\Minecraft\\.claude"
+    ]
+  }
+}

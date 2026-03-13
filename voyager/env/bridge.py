@@ -89,6 +89,7 @@ class VoyagerEnv(gym.Env):
             logger.warning("Mineflayer process has exited, restarting")
             self.mineflayer.run()
             if not self.mineflayer.is_running:
+                retry += 1
                 if retry > 3:
                     raise RuntimeError("Mineflayer process failed to start")
                 else:
@@ -175,10 +176,33 @@ class VoyagerEnv(gym.Env):
         }
 
         self.unpause()
-        self.mineflayer.stop()
-        time.sleep(1)  # wait for mineflayer to exit
 
-        returned_data = self.check_process()
+        mode = options.get("mode", "hard")
+        if mode == "hard" or not self.connected:
+            # Hard reset or first-time start: kill the process and do a full reconnect
+            self.mineflayer.stop()
+            time.sleep(1)  # wait for mineflayer to exit
+            returned_data = self.check_process()
+        else:
+            # Soft reset: process is already running, just POST /reset to re-initialise
+            # bot state in-game without killing the Node process or disconnecting.
+            logger.debug("Soft reset: skipping mineflayer restart, sending /reset directly")
+            self.check_process()  # ensure process is still alive (no-op if it is)
+            try:
+                res = requests.post(
+                    f"{self.server}/reset",
+                    json=self.reset_options,
+                    timeout=self.step_timeout,
+                )
+                if res.status_code != 200:
+                    raise RuntimeError(f"Minecraft server replied with code {res.status_code}")
+                returned_data = res.json()
+            except Exception as e:
+                logger.warning(f"Soft reset /reset failed ({e}), falling back to full restart")
+                self.mineflayer.stop()
+                time.sleep(1)
+                returned_data = self.check_process()
+
         self.has_reset = True
         self.connected = True
         # All the reset in step will be soft

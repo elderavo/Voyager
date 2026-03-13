@@ -36,6 +36,13 @@ const { plugin: tool } = require("mineflayer-tool");
 
 let bot = null;
 
+// Tracks the res object for any /start request that is still in-flight (i.e. the
+// bot has been created but the spawn sequence hasn't finished yet and we haven't
+// called res.json() on that request).  If a second /start arrives before the
+// first one completes we use this to send an error reply to the stale request
+// immediately so that the Python side doesn't hang for the full 120 s timeout.
+let pendingStartRes = null;
+
 // Prevent viewer/plugin errors from crashing the process between requests
 process.on("uncaughtException", (err) => {
     log.error("Uncaught exception (non-fatal):", err.message || String(err));
@@ -50,9 +57,19 @@ app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ limit: "50mb", extended: false }));
 
 app.post("/start", (req, res) => {
+    // If a previous /start is still in-flight (spawn sequence hasn't finished),
+    // resolve it with an error immediately so the old Python request doesn't hang
+    // for the full step_timeout before timing out.
+    if (pendingStartRes) {
+        log.warn("Second /start received while a previous /start is still in-flight — aborting the previous request");
+        pendingStartRes.status(409).json({ error: "Superseded by a newer /start request" });
+        pendingStartRes = null;
+    }
     if (bot) onDisconnect("Restarting bot");
     bot = null;
     log.debug("POST /start", req.body);
+    // Mark this request as pending until the spawn sequence sends its response.
+    pendingStartRes = res;
     bot = mineflayer.createBot({
         host: req.body.host || "localhost", // minecraft server ip
         port: req.body.port, // minecraft server port
@@ -81,13 +98,36 @@ app.post("/start", (req, res) => {
         bot.removeListener("error", onConnectionFailed);
         let itemTicks = 1;
         if (req.body.reset === "hard") {
-            // Set keepInventory first so the kill doesn't drop items
+            // Suppress the kicked→onDisconnect handler during the kill/respawn
+            // sequence so a brief death-screen disconnect doesn't tear the bot
+            // down while we're waiting for respawn.
+            bot.removeListener("kicked", onDisconnect);
+
+            // Set keepInventory first so the kill doesn't drop items, then
+            // wait a few ticks to let the server process the gamerule before
+            // the kill fires.
             bot.chat("/gamerule keepInventory true");
+            await bot.waitForTicks(5);
             bot.chat("/clear @s");
             bot.chat("/kill @s");
-            // Wait for the bot to respawn after /kill before continuing setup
-            await new Promise((resolve) => bot.once("respawn", resolve));
+
+            // Wait for respawn with a hard timeout so a non-respawning server
+            // doesn't block /start for the full 120 s step_timeout.
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    bot.removeListener("respawn", onRespawn);
+                    reject(new Error("Bot did not respawn within 15 s after /kill @s"));
+                }, 15000);
+                function onRespawn() {
+                    clearTimeout(timer);
+                    resolve();
+                }
+                bot.once("respawn", onRespawn);
+            });
             log.debug("Bot respawned after hard reset kill");
+
+            // Re-register the kicked listener now that respawn is confirmed.
+            bot.on("kicked", onDisconnect);
 
             const inventory = req.body.inventory ? req.body.inventory : {};
             const equipment = req.body.equipment
@@ -167,6 +207,10 @@ app.post("/start", (req, res) => {
         }
 
         await bot.waitForTicks(bot.waitTicks * itemTicks);
+        // Spawn sequence complete — clear the pending tracker before sending the
+        // response so that any concurrent /start that arrives after this point
+        // doesn't try to abort an already-resolved request.
+        pendingStartRes = null;
         res.json(bot.observe());
 
         initCounter(bot);
@@ -186,6 +230,7 @@ app.post("/start", (req, res) => {
     function onConnectionFailed(e) {
         log.error("Bot connection failed:", e.message || String(e));
         bot = null;
+        pendingStartRes = null;
         res.status(400).json({ error: e });
     }
     function onDisconnect(message) {
@@ -199,6 +244,9 @@ app.post("/start", (req, res) => {
 });
 
 app.post("/step", async (req, res) => {
+    if (!bot) {
+        return res.status(503).json({ error: "Bot not connected — call /start first" });
+    }
     // import useful package
     let response_sent = false;
     function otherError(err) {
@@ -444,6 +492,34 @@ app.post("/step", async (req, res) => {
             return source + err.message + "\n" + code_source;
         }
         return err.message;
+    }
+});
+
+app.post("/reset", async (req, res) => {
+    // Soft reset: bot stays connected, just reset counters and optionally teleport.
+    // Does NOT create a new bot connection. Used between tasks to avoid disconnect churn.
+    if (!bot) {
+        res.status(400).json({ error: "Bot not spawned" });
+        return;
+    }
+    log.debug("POST /reset (soft)", req.body);
+    try {
+        bot.globalTickCounter = 0;
+        bot.stuckTickCounter = 0;
+        bot.stuckPosList = [];
+
+        if (req.body.position) {
+            bot.chat(`/tp @s ${req.body.position.x} ${req.body.position.y} ${req.body.position.z}`);
+        }
+
+        if (req.body.waitTicks) {
+            await bot.waitForTicks(req.body.waitTicks);
+        }
+
+        res.json(bot.observe());
+    } catch (err) {
+        log.error("Error during soft /reset:", err.message || String(err));
+        res.status(500).json({ error: err.message || String(err) });
     }
 });
 

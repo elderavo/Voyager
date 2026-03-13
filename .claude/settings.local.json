@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find c:/Users/Alex/Desktop/Projects/Coding/Minecraft -name *.log -newer c:/Users/Alex/Desktop/Projects/Coding/Minecraft/run_voyager.py)"
+    ]
+  }
+}

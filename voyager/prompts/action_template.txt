@@ -36,13 +36,13 @@ RULES FOR PROGRAM GENERATION
 OR You may output exec_code instead of defining a new async function.
 Use exec_code when the task requires only a direct primitive action.
 Example:
-{
+{{
   "program_code": "",
   "program_name": "",
   "exec_code": "await mineBlock(bot, 'stone', 3);",
   "reasoning": "...",
   "recipe": null
-}
+}}
 
 
 2. You MUST call Mineflayer primitives DIRECTLY:
