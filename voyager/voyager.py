@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import shutil
 import time
 import traceback
 from typing import Dict
@@ -61,6 +62,14 @@ class Voyager:
         Curriculum agent is the automatic curriculum in paper.
         Critic agent is the self-verification in paper.
         """
+        # Wipe the checkpoint directory at the start of every fresh run so stale
+        # skills, curriculum state, and events from previous sessions don't bleed
+        # in.  Agents create their own subdirs during __init__, so this must run
+        # before any agent is constructed.
+        if not resume and os.path.exists(ckpt_dir):
+            logger.info(f"Fresh run — wiping checkpoint directory: {ckpt_dir}")
+            shutil.rmtree(ckpt_dir)
+
         # init env
         self.env = VoyagerEnv(
             mc_port=mc_port,

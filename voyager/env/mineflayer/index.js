@@ -395,14 +395,15 @@ app.post("/step", async (req, res) => {
     }
 
     function returnItems() {
-        bot.chat("/gamerule doTileDrops false");
+        // Use plain "air" (no "destroy") so blocks vanish silently without
+        // triggering item drops — no need to toggle doTileDrops every step.
         const crafting_table = bot.findBlock({
             matching: mcData.blocksByName.crafting_table.id,
             maxDistance: 128,
         });
         if (crafting_table) {
             bot.chat(
-                `/setblock ${crafting_table.position.x} ${crafting_table.position.y} ${crafting_table.position.z} air destroy`
+                `/setblock ${crafting_table.position.x} ${crafting_table.position.y} ${crafting_table.position.z} air`
             );
             bot.chat("/give @s crafting_table");
         }
@@ -412,7 +413,7 @@ app.post("/step", async (req, res) => {
         });
         if (furnace) {
             bot.chat(
-                `/setblock ${furnace.position.x} ${furnace.position.y} ${furnace.position.z} air destroy`
+                `/setblock ${furnace.position.x} ${furnace.position.y} ${furnace.position.z} air`
             );
             bot.chat("/give @s furnace");
         }
@@ -429,7 +430,6 @@ app.post("/step", async (req, res) => {
         ) {
             bot.chat("/give @s iron_pickaxe");
         }
-        bot.chat("/gamerule doTileDrops true");
     }
 
     function handleError(err) {
